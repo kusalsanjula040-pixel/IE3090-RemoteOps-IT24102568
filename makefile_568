@@ -1,0 +1,23 @@
+CC = gcc
+
+
+
+all: agent_568 controller_568
+
+
+
+agent_568: agent_568.c
+
+	$(CC) agent_568.c -o agent_568
+
+
+
+controller_568: controller_568.c
+
+	$(CC) controller_568.c -o controller_568
+
+
+
+clean:
+
+	rm -f agent_568 controller_568
