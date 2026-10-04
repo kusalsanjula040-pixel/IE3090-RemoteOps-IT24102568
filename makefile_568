@@ -1,5 +1,7 @@
 CC = gcc
 
+CFLAGS = -Wall -Wextra -pthread
+
 
 
 all: agent_568 controller_568
@@ -8,13 +10,13 @@ all: agent_568 controller_568
 
 agent_568: agent_568.c
 
-	$(CC) agent_568.c -o agent_568
+	$(CC) $(CFLAGS) agent_568.c -o agent_568
 
 
 
 controller_568: controller_568.c
 
-	$(CC) controller_568.c -o controller_568
+	$(CC) $(CFLAGS) controller_568.c -o controller_568
 
 
 
