@@ -122,3 +122,42 @@ The session is then marked as authenticated.
 
 # IE3090-RemoteOps-IT24102568
 
+#SYSINFO Command
+
+The RemoteOps Agent supports the SYSINFO command after successful authentication.
+
+Command
+SYSINFO
+Response Format
+OK SYSINFO CPU:<load> MEMORY:<percentage>% UPTIME:<HH:MM:SS> SID:<SID>
+Example
+RemoteOps> AUTH OPS-2568
+Agent: OK AUTHENTICATED SID:8652
+
+RemoteOps> SYSINFO
+Agent: OK SYSINFO CPU:0.15 MEMORY:38% UPTIME:05:21:34 SID:8652
+System Information
+
+The Agent retrieves:
+
+CPU load
+Memory usage percentage
+System uptime
+Session ID
+Linux Sources
+
+The implementation uses the Linux /proc filesystem:
+
+/proc/loadavg
+/proc/meminfo
+/proc/uptime
+
+/proc/loadavg is used to obtain CPU load information.
+
+/proc/meminfo is used to calculate memory usage.
+
+/proc/uptime is used to calculate system uptime.
+
+Authentication Requirement
+
+SYSINFO cannot be accessed before authentication.
