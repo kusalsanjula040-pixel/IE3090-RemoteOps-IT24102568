@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -121,9 +122,7 @@ void format_uptime(long seconds, char *buffer, size_t size)
     long secs;
 
     hours = seconds / 3600;
-
     minutes = (seconds % 3600) / 60;
-
     secs = seconds % 60;
 
     snprintf(
@@ -133,6 +132,126 @@ void format_uptime(long seconds, char *buffer, size_t size)
         hours,
         minutes,
         secs
+    );
+}
+
+
+/*
+ * Handle LISTPROC command
+ *
+ * Gets currently running processes using
+ * the Linux "ps" command.
+ */
+void handle_listproc(int client_fd)
+{
+    FILE *process_pipe;
+
+    char line[256];
+
+    char response[BUFFER_SIZE];
+
+    /*
+     * Open a pipe to the ps command.
+     *
+     * ps -eo pid,user,comm
+     *
+     * PID  = Process ID
+     * USER = Process owner
+     * COMM = Command/process name
+     */
+    process_pipe = popen(
+        "ps -eo pid,user,comm --sort=pid",
+        "r"
+    );
+
+    if (process_pipe == NULL)
+    {
+        char error_response[] =
+            "ERR 003 LISTPROC_FAILED\n";
+
+        send(
+            client_fd,
+            error_response,
+            strlen(error_response),
+            0
+        );
+
+        printf("LISTPROC failed.\n");
+
+        return;
+    }
+
+
+    /*
+     * Send LISTPROC header first.
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK PROCS SID:%s\n",
+        SID
+    );
+
+    send(
+        client_fd,
+        response,
+        strlen(response),
+        0
+    );
+
+
+    /*
+     * Read process information line by line.
+     */
+    while (fgets(
+        line,
+        sizeof(line),
+        process_pipe
+    ) != NULL)
+    {
+        /*
+         * Send each process line
+         * to the Controller.
+         */
+        send(
+            client_fd,
+            line,
+            strlen(line),
+            0
+        );
+    }
+
+
+    /*
+     * Close the pipe.
+     */
+    int status = pclose(process_pipe);
+
+    if (status == -1)
+    {
+        printf("LISTPROC pclose failed.\n");
+    }
+
+
+    /*
+     * Send end marker.
+     *
+     * Controller needs this marker to know
+     * that the process list has finished.
+     */
+    char end_response[] =
+        "END PROCS\n";
+
+    send(
+        client_fd,
+        end_response,
+        strlen(end_response),
+        0
+    );
+
+
+    printf(
+        "LISTPROC sent successfully.\n"
     );
 }
 
@@ -155,7 +274,11 @@ void *handle_client(void *arg)
 
     while (1)
     {
-        memset(buffer, 0, BUFFER_SIZE);
+        memset(
+            buffer,
+            0,
+            BUFFER_SIZE
+        );
 
         int bytes_received = recv(
             client_fd,
@@ -176,15 +299,28 @@ void *handle_client(void *arg)
         /*
          * Remove newline
          */
-        buffer[strcspn(buffer, "\r\n")] = '\0';
+        buffer[strcspn(
+            buffer,
+            "\r\n"
+        )] = '\0';
 
-        printf("Received: %s\n", buffer);
+
+        printf(
+            "Received: %s\n",
+            buffer
+        );
 
 
         /*
+         * ================================
          * AUTHENTICATION
+         * ================================
          */
-        if (strncmp(buffer, "AUTH ", 5) == 0)
+        if (strncmp(
+            buffer,
+            "AUTH ",
+            5
+        ) == 0)
         {
             char received_token[100];
 
@@ -208,7 +344,10 @@ void *handle_client(void *arg)
             /*
              * Check authentication token
              */
-            if (strcmp(received_token, AUTH_TOKEN) == 0)
+            if (strcmp(
+                received_token,
+                AUTH_TOKEN
+            ) == 0)
             {
                 authenticated = 1;
 
@@ -253,7 +392,9 @@ void *handle_client(void *arg)
                     0
                 );
 
-                printf("AUTH failed.\n");
+                printf(
+                    "AUTH failed.\n"
+                );
             }
 
             continue;
@@ -261,9 +402,14 @@ void *handle_client(void *arg)
 
 
         /*
+         * ================================
          * QUIT
+         * ================================
          */
-        if (strcmp(buffer, "QUIT") == 0)
+        if (strcmp(
+            buffer,
+            "QUIT"
+        ) == 0)
         {
             char response[BUFFER_SIZE];
 
@@ -318,7 +464,10 @@ void *handle_client(void *arg)
          * SYSINFO
          * ================================
          */
-        if (strcmp(buffer, "SYSINFO") == 0)
+        if (strcmp(
+            buffer,
+            "SYSINFO"
+        ) == 0)
         {
             double cpu;
             int memory;
@@ -413,9 +562,24 @@ void *handle_client(void *arg)
 
 
         /*
+         * ================================
+         * LISTPROC
+         * ================================
+         */
+        if (strcmp(
+            buffer,
+            "LISTPROC"
+        ) == 0)
+        {
+            handle_listproc(client_fd);
+
+            continue;
+        }
+
+
+        /*
          * Other commands will be added later:
          *
-         * LISTPROC
          * EXEC
          * PUT
          * GET
@@ -494,7 +658,8 @@ int main()
     /*
      * 2. Configure server address
      */
-    server_addr.sin_family = AF_INET;
+    server_addr.sin_family =
+        AF_INET;
 
     server_addr.sin_addr.s_addr =
         INADDR_ANY;
@@ -528,7 +693,10 @@ int main()
     /*
      * 4. Listen
      */
-    if (listen(server_fd, 5) < 0)
+    if (listen(
+        server_fd,
+        5
+    ) < 0)
     {
         perror("listen");
 
@@ -555,6 +723,9 @@ int main()
     );
     printf(
         "SYSINFO            : Enabled\n"
+    );
+    printf(
+        "LISTPROC           : Enabled\n"
     );
     printf("=================================\n\n");
 
@@ -642,4 +813,3 @@ int main()
 
     return 0;
 }
-

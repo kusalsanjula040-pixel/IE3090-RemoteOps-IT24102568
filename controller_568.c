@@ -33,7 +33,9 @@ int main()
         return 1;
     }
 
-    printf("Socket created successfully.\n");
+    printf(
+        "Socket created successfully.\n"
+    );
 
 
     /*
@@ -42,9 +44,11 @@ int main()
      * 127.0.0.1 means Agent is running
      * on the same CentOS machine.
      */
-    server_addr.sin_family = AF_INET;
+    server_addr.sin_family =
+        AF_INET;
 
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port =
+        htons(PORT);
 
 
     if (inet_pton(
@@ -78,11 +82,15 @@ int main()
     }
 
 
-    printf("Connected to RemoteOps Agent.\n");
+    printf(
+        "Connected to RemoteOps Agent.\n"
+    );
 
 
     /*
+     * ================================
      * Command loop
+     * ================================
      */
     while (1)
     {
@@ -105,9 +113,43 @@ int main()
 
 
         /*
+         * Keep a copy of the command
+         *
+         * We need this because buffer will
+         * later be cleared before recv().
+         */
+        char command[BUFFER_SIZE];
+
+        strncpy(
+            command,
+            buffer,
+            BUFFER_SIZE - 1
+        );
+
+        command[BUFFER_SIZE - 1] = '\0';
+
+
+        /*
+         * Remove newline from command
+         *
+         * Example:
+         *
+         * "LISTPROC\n"
+         *
+         * becomes:
+         *
+         * "LISTPROC"
+         */
+        command[strcspn(
+            command,
+            "\r\n"
+        )] = '\0';
+
+
+        /*
          * Send command to Agent
          */
-        send(
+        int bytes_sent = send(
             client_fd,
             buffer,
             strlen(buffer),
@@ -115,8 +157,114 @@ int main()
         );
 
 
+        if (bytes_sent < 0)
+        {
+            perror("send");
+            break;
+        }
+
+
         /*
-         * Receive response
+         * ====================================
+         * LISTPROC
+         * ====================================
+         *
+         * LISTPROC is different from commands
+         * such as AUTH and SYSINFO.
+         *
+         * Agent sends multiple responses:
+         *
+         * OK PROCS
+         * process 1
+         * process 2
+         * process 3
+         * ...
+         * END PROCS
+         *
+         * Therefore we continue receiving until
+         * END PROCS is received.
+         */
+        if (strcmp(
+            command,
+            "LISTPROC"
+        ) == 0)
+        {
+            while (1)
+            {
+                memset(
+                    buffer,
+                    0,
+                    BUFFER_SIZE
+                );
+
+
+                /*
+                 * Receive process information
+                 */
+                int bytes_received = recv(
+                    client_fd,
+                    buffer,
+                    BUFFER_SIZE - 1,
+                    0
+                );
+
+
+                if (bytes_received <= 0)
+                {
+                    printf(
+                        "Agent disconnected.\n"
+                    );
+
+                    close(client_fd);
+
+                    return 1;
+                }
+
+
+                buffer[bytes_received] = '\0';
+
+
+                /*
+                 * Display process information
+                 */
+                printf(
+                    "%s",
+                    buffer
+                );
+
+
+                /*
+                 * Check whether Agent sent
+                 * the end marker.
+                 */
+                if (strstr(
+                    buffer,
+                    "END PROCS"
+                ) != NULL)
+                {
+                    break;
+                }
+            }
+
+
+            /*
+             * LISTPROC completed.
+             *
+             * Go back to command prompt.
+             */
+            continue;
+        }
+
+
+        /*
+         * ====================================
+         * Normal command response
+         * ====================================
+         *
+         * AUTH
+         * SYSINFO
+         * QUIT
+         * and temporary commands
          */
         memset(
             buffer,
@@ -135,7 +283,10 @@ int main()
 
         if (bytes_received <= 0)
         {
-            printf("Agent disconnected.\n");
+            printf(
+                "Agent disconnected.\n"
+            );
+
             break;
         }
 
@@ -143,7 +294,10 @@ int main()
         buffer[bytes_received] = '\0';
 
 
-        printf("Agent: %s", buffer);
+        printf(
+            "Agent: %s",
+            buffer
+        );
 
 
         /*
@@ -165,7 +319,11 @@ int main()
      */
     close(client_fd);
 
-    printf("Controller closed.\n");
+
+    printf(
+        "Controller closed.\n"
+    );
+
 
     return 0;
 }
