@@ -161,3 +161,69 @@ The implementation uses the Linux /proc filesystem:
 Authentication Requirement
 
 SYSINFO cannot be accessed before authentication.
+
+
+# LISTPROC Command
+Purpose
+
+The LISTPROC command allows the Controller to request a list of currently running processes from the RemoteOps Agent.
+
+The Agent executes the Linux ps command and sends the process information back to the Controller over the existing TCP connection.
+
+Command
+LISTPROC
+Authentication Requirement
+
+The Controller must authenticate before using LISTPROC.
+
+Example:
+
+AUTH OPS-2568
+
+Response:
+
+OK AUTHENTICATED SID:8652
+
+Then:
+
+LISTPROC
+Agent Processing
+
+The Agent handles the command using:
+
+handle_listproc(client_fd);
+
+Inside this function, popen() is used to execute the Linux process listing command:
+
+ps -eo pid,user,comm --sort=pid
+
+The command provides:
+
+PID — Process ID
+USER — Process owner
+COMMAND — Process name
+
+The output is read line by line using fgets().
+
+Each line is sent to the Controller using the TCP send() function.
+
+Example Response
+OK PROCS SID:8652
+    PID USER     COMMAND
+      1 root     systemd
+      2 root     kthreadd
+      3 root     pool_workqueue_release
+...
+END PROCS
+
+The exact process list depends on the processes currently running on the CentOS system.
+
+End Marker
+
+The Agent sends:
+
+END PROCS
+
+after the complete process list has been transmitted.
+
+This allows the Controller to identify the end of the LISTPROC response.
