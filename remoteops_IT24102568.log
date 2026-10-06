@@ -9,3 +9,5 @@
 [20:31:20] AUTH successful
 [20:31:28] EXEC rejected: command not allowed
 [20:31:52] Unknown command received
+[22:38:45] Client requested QUIT
+[22:57:13] Agent started

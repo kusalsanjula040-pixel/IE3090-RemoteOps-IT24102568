@@ -19,7 +19,7 @@
 #define SID "8652"
 
 #define STORAGE_PARENT "./agentfiles"
-#define STORAGE_DIR "./agentfiles/568"
+#define STORAGE_DIR "./agentfiles/IT24102568"
 
 #define UDP_PORT 9410
 
@@ -66,7 +66,7 @@ void log_event(const char *event)
     pthread_mutex_lock(&log_mutex);
 
     log_file = fopen(
-        "remoteops_568.log",
+        "remoteops_IT24102568.log",
         "a"
     );
 
