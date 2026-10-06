@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include <errno.h>
+#include <time.h>
 
 #define PORT 9410
 #define BUFFER_SIZE 1024
@@ -25,6 +26,52 @@ volatile int monitor_stop_requested = 0;
 char monitor_controller_ip[INET_ADDRSTRLEN];
 char connected_controller_ip[INET_ADDRSTRLEN];
 pthread_t monitor_thread;
+
+
+pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void log_event(const char *event)
+{
+    FILE *log_file;
+    time_t now;
+    struct tm time_info;
+    char time_text[32];
+
+    now = time(NULL);
+
+    if (localtime_r(&now, &time_info) == NULL)
+    {
+        return;
+    }
+
+    strftime(
+        time_text,
+        sizeof(time_text),
+        "%H:%M:%S",
+        &time_info
+    );
+
+    pthread_mutex_lock(&log_mutex);
+
+    log_file = fopen(
+        "remoteops_568.log",
+        "a"
+    );
+
+    if (log_file != NULL)
+    {
+        fprintf(
+            log_file,
+            "[%s] %s\n",
+            time_text,
+            event
+        );
+
+        fclose(log_file);
+    }
+
+    pthread_mutex_unlock(&log_mutex);
+}
 
 
 /*
@@ -491,6 +538,10 @@ void handle_listproc(
     printf(
         "LISTPROC sent successfully.\n"
     );
+
+    log_event(
+        "LISTPROC requested"
+    );
 }
 
 
@@ -666,6 +717,19 @@ void handle_exec(
         "EXEC successful: %s -> %s\n",
         requested_command,
         output
+    );
+
+    char log_message[BUFFER_SIZE];
+
+    snprintf(
+        log_message,
+        sizeof(log_message),
+        "EXEC %s",
+        requested_command
+    );
+
+    log_event(
+        log_message
     );
 }
 
@@ -1013,6 +1077,19 @@ void handle_put(
         filename,
         (unsigned long long)file_size
     );
+
+    char log_message[BUFFER_SIZE];
+
+    snprintf(
+        log_message,
+        sizeof(log_message),
+        "PUT %s",
+        filename
+    );
+
+    log_event(
+        log_message
+    );
 }
 
 
@@ -1327,6 +1404,19 @@ void handle_get(
         filename,
         (unsigned long long)file_size
     );
+
+    char log_message[BUFFER_SIZE];
+
+    snprintf(
+        log_message,
+        sizeof(log_message),
+        "GET %s",
+        filename
+    );
+
+    log_event(
+        log_message
+    );
 }
 
 
@@ -1519,6 +1609,10 @@ void *handle_client(
                 "Client disconnected.\n"
             );
 
+            log_event(
+                "Client disconnected"
+            );
+
             break;
         }
 
@@ -1586,6 +1680,10 @@ void *handle_client(
                     "AUTH successful. SID:%s\n",
                     SID
                 );
+
+                log_event(
+                    "AUTH successful"
+                );
             }
             else
             {
@@ -1608,6 +1706,10 @@ void *handle_client(
 
                 printf(
                     "AUTH failed.\n"
+                );
+
+                log_event(
+                    "AUTH failed"
                 );
             }
 
@@ -1642,6 +1744,10 @@ void *handle_client(
                 client_fd,
                 response,
                 strlen(response)
+            );
+
+            log_event(
+                "Client requested QUIT"
             );
 
             break;
@@ -1688,6 +1794,10 @@ void *handle_client(
                     sizeof(response),
                     "OK MONITOR_STARTED SID:%s\n",
                     SID
+                );
+
+                log_event(
+                    "MONITOR START"
                 );
             }
             else if (result == 1)
@@ -1741,6 +1851,10 @@ void *handle_client(
                 client_fd,
                 response,
                 strlen(response)
+            );
+
+            log_event(
+                "MONITOR STOP"
             );
 
             continue;
@@ -1817,6 +1931,10 @@ void *handle_client(
                 client_fd,
                 response,
                 strlen(response)
+            );
+
+            log_event(
+                "SYSINFO requested"
             );
 
             continue;
@@ -2147,6 +2265,10 @@ int main()
 
     printf(
         "=================================\n\n"
+    );
+
+    log_event(
+        "Agent started"
     );
 
 

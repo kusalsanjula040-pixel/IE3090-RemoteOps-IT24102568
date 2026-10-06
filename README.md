@@ -483,12 +483,78 @@ The receiver is listening on:
 UDP Port: 9410
 
 
-It is not blocking the normal RemoteOps command prompt, it will receive and display monitoring packets.
+It is not blocking the normal RemoteOps command prompt, it will receive and display monitoring 
+packets.
 
 Error Handling
 
-These are the responses that are accepted:
-OK MONITOR_STARTED
-OK MONITOR_STOPPED
-ERR 011 MONITOR_ALREADY_RUNNING
-ERR 012 MONITOR_FAILED
+These are the responses that are accepted: OK MONITOR_STARTED OK MONITOR_STOPPED ERR 011 
+MONITOR_ALREADY_RUNNING ERR 012 MONITOR_FAILED
+
+
+
+#########
+
+Agent-Side Activity Logging
+
+RemoteOps includes agent-side activity logging to record important operations performed by controllers.
+
+The Agent stores log entries in:
+
+remoteops_568.log
+Purpose
+
+The logging feature provides a record of important RemoteOps activities. This can be useful for:
+
+Monitoring Agent activity
+Troubleshooting
+Tracking controller requests
+Verifying command execution
+Demonstrating system activity during testing
+Log Format
+
+Each log entry contains a timestamp followed by the activity description.
+
+Example:
+
+[13:54:39] Agent started
+[13:54:39] Client connected
+[13:54:39] AUTH successful
+[13:54:39] SYSINFO requested
+[13:54:39] LISTPROC requested
+[13:54:39] EXEC HOSTNAME
+[13:54:39] PUT test.txt
+[13:54:39] GET test.txt
+[13:54:39] MONITOR START
+[13:54:40] MONITOR STOP
+[13:54:40] Client requested QUIT
+[13:54:40] Client disconnected
+Logging Implementation
+
+The Agent uses the C time.h library to generate timestamps.
+
+#include <time.h>
+
+A dedicated function is used to write activities to the log file:
+
+void log_event(const char *event)
+
+The log file is opened in append mode so that previous log entries are preserved.
+
+remoteops_568.log
+        ↓
+Existing entries preserved
+        ↓
+New events appended
+Thread Safety
+
+RemoteOps supports multiple controller connections using threads. Therefore, multiple client threads could attempt to write to the log file at the same time.
+
+A pthread_mutex_t mutex is used to synchronize log writes:
+
+pthread_mutex_t log_mutex
+
+This prevents multiple threads from writing to the log file simultaneously and keeps log entries consistent.
+
+
+
