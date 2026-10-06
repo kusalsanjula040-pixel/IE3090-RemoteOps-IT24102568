@@ -227,3 +227,55 @@ END PROCS
 after the complete process list has been transmitted.
 
 This allows the Controller to identify the end of the LISTPROC response.
+
+
+
+
+##EXEC Command
+
+The RemoteOps Agent supports the EXEC command for executing a predefined set of Linux system commands.
+
+Purpose
+
+The EXEC command allows the Controller to request basic system information from the Linux Agent.
+
+For security reasons, arbitrary Linux commands are not allowed. The Agent uses a whitelist to allow only predefined commands.
+
+Supported Commands
+
+RemoteOps Command	Linux Command	Purpose
+EXEC DATE	date	Displays the current system date and time
+EXEC UPTIME	uptime	Displays system uptime and load information
+EXEC DISKFREE	df -h	Displays disk space usage
+EXEC HOSTNAME	hostname	Displays the Agent machine hostname
+EXEC WHOAMI	whoami	Displays the current Linux user
+
+EXEC Processing
+
+When the Controller sends an EXEC command:
+
+The Agent receives the command.
+The Agent checks whether the requested command is in the whitelist.
+If the command is allowed, the corresponding fixed Linux command is executed.
+The command output is collected by the Agent.
+The result is sent back to the Controller.
+If the command is not allowed, the Agent rejects the request.
+
+Command Security
+
+The Agent does not allow arbitrary commands.
+
+For example:
+
+RemoteOps> EXEC ls
+Agent: ERR 002 COMMAND_NOT_ALLOWED
+
+The following type of command is also rejected:
+
+RemoteOps> EXEC rm -rf /
+Agent: ERR 002 COMMAND_NOT_ALLOWED
+
+This prevents the Controller from directly executing unauthorized Linux commands on the Agent machine.
+
+
+

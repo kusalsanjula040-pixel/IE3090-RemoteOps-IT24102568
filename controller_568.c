@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,7 +112,7 @@ int main()
 
 
         /*
-         * Keep a copy of the command
+         * Keep a copy of the command.
          *
          * We need this because buffer will
          * later be cleared before recv().
@@ -169,10 +168,9 @@ int main()
          * LISTPROC
          * ====================================
          *
-         * LISTPROC is different from commands
-         * such as AUTH and SYSINFO.
+         * LISTPROC returns multiple responses.
          *
-         * Agent sends multiple responses:
+         * Agent:
          *
          * OK PROCS
          * process 1
@@ -181,8 +179,7 @@ int main()
          * ...
          * END PROCS
          *
-         * Therefore we continue receiving until
-         * END PROCS is received.
+         * Therefore receive until END PROCS.
          */
         if (strcmp(
             command,
@@ -234,8 +231,7 @@ int main()
 
 
                 /*
-                 * Check whether Agent sent
-                 * the end marker.
+                 * Check end marker
                  */
                 if (strstr(
                     buffer,
@@ -249,9 +245,92 @@ int main()
 
             /*
              * LISTPROC completed.
-             *
-             * Go back to command prompt.
              */
+            continue;
+        }
+
+
+        /*
+         * ====================================
+         * EXEC
+         * ====================================
+         *
+         * Example:
+         *
+         * EXEC DATE
+         * EXEC UPTIME
+         * EXEC DISKFREE
+         * EXEC HOSTNAME
+         * EXEC WHOAMI
+         *
+         * Agent sends one response:
+         *
+         * OK EXEC_RESULT ...
+         *
+         * OR
+         *
+         * ERR 002 COMMAND_NOT_ALLOWED
+         */
+        if (strncmp(
+            command,
+            "EXEC ",
+            5
+        ) == 0)
+        {
+            /*
+             * Check whether a command was
+             * actually provided after EXEC.
+             */
+            if (strlen(command) <= 5)
+            {
+                printf(
+                    "Usage: EXEC <command>\n"
+                );
+
+                continue;
+            }
+
+
+            memset(
+                buffer,
+                0,
+                BUFFER_SIZE
+            );
+
+
+            /*
+             * Receive EXEC response
+             */
+            int bytes_received = recv(
+                client_fd,
+                buffer,
+                BUFFER_SIZE - 1,
+                0
+            );
+
+
+            if (bytes_received <= 0)
+            {
+                printf(
+                    "Agent disconnected.\n"
+                );
+
+                break;
+            }
+
+
+            buffer[bytes_received] = '\0';
+
+
+            /*
+             * Display Agent response
+             */
+            printf(
+                "Agent: %s",
+                buffer
+            );
+
+
             continue;
         }
 
@@ -264,7 +343,7 @@ int main()
          * AUTH
          * SYSINFO
          * QUIT
-         * and temporary commands
+         * and other single-response commands.
          */
         memset(
             buffer,
@@ -327,4 +406,3 @@ int main()
 
     return 0;
 }
-

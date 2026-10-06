@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -150,6 +149,7 @@ void handle_listproc(int client_fd)
 
     char response[BUFFER_SIZE];
 
+
     /*
      * Open a pipe to the ps command.
      *
@@ -252,6 +252,213 @@ void handle_listproc(int client_fd)
 
     printf(
         "LISTPROC sent successfully.\n"
+    );
+}
+
+
+/*
+ * Handle EXEC command
+ *
+ * Allowed commands:
+ *
+ * EXEC DATE
+ * EXEC UPTIME
+ * EXEC DISKFREE
+ * EXEC HOSTNAME
+ * EXEC WHOAMI
+ *
+ * Only whitelisted commands are allowed.
+ */
+void handle_exec(int client_fd, const char *command)
+{
+    const char *linux_command = NULL;
+
+    char response[BUFFER_SIZE];
+    char output[BUFFER_SIZE];
+
+    FILE *command_pipe;
+
+    size_t used = 0;
+
+
+    /*
+     * Get the command after "EXEC "
+     *
+     * Example:
+     *
+     * EXEC HOSTNAME
+     *
+     * command + 5 gives:
+     *
+     * HOSTNAME
+     */
+    const char *requested_command = command + 5;
+
+
+    /*
+     * Check the command against
+     * the allowed command list.
+     */
+
+    if (strcmp(requested_command, "DATE") == 0)
+    {
+        linux_command = "date";
+    }
+    else if (strcmp(requested_command, "UPTIME") == 0)
+    {
+        linux_command = "uptime";
+    }
+    else if (strcmp(requested_command, "DISKFREE") == 0)
+    {
+        linux_command = "df -h";
+    }
+    else if (strcmp(requested_command, "HOSTNAME") == 0)
+    {
+        linux_command = "hostname";
+    }
+    else if (strcmp(requested_command, "WHOAMI") == 0)
+    {
+        linux_command = "whoami";
+    }
+    else
+    {
+        /*
+         * Command is not in whitelist.
+         */
+        snprintf(
+            response,
+            sizeof(response),
+            "ERR 002 COMMAND_NOT_ALLOWED\n"
+        );
+
+        send(
+            client_fd,
+            response,
+            strlen(response),
+            0
+        );
+
+        printf(
+            "EXEC rejected: %s\n",
+            requested_command
+        );
+
+        return;
+    }
+
+
+    /*
+     * Execute only the fixed Linux command.
+     *
+     * Because linux_command comes only from
+     * the whitelist above, arbitrary commands
+     * cannot be executed.
+     */
+    command_pipe = popen(
+        linux_command,
+        "r"
+    );
+
+    if (command_pipe == NULL)
+    {
+        snprintf(
+            response,
+            sizeof(response),
+            "ERR 004 EXEC_FAILED\n"
+        );
+
+        send(
+            client_fd,
+            response,
+            strlen(response),
+            0
+        );
+
+        printf("EXEC failed.\n");
+
+        return;
+    }
+
+
+    /*
+     * Clear output buffer.
+     */
+    memset(
+        output,
+        0,
+        sizeof(output)
+    );
+
+
+    /*
+     * Read command output.
+     */
+    while (
+        used < sizeof(output) - 1 &&
+        fgets(
+            output + used,
+            sizeof(output) - used,
+            command_pipe
+        ) != NULL
+    )
+    {
+        used = strlen(output);
+    }
+
+
+    /*
+     * Close command pipe.
+     */
+    int status = pclose(command_pipe);
+
+    if (status == -1)
+    {
+        printf("EXEC pclose failed.\n");
+    }
+
+
+    /*
+     * Remove trailing newline.
+     */
+    while (
+        used > 0 &&
+        (
+            output[used - 1] == '\n' ||
+            output[used - 1] == '\r'
+        )
+    )
+    {
+        output[used - 1] = '\0';
+        used--;
+    }
+
+
+    /*
+     * Create EXEC response.
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK EXEC_RESULT %s\n",
+        output
+    );
+
+
+    /*
+     * Send result to Controller.
+     */
+    send(
+        client_fd,
+        response,
+        strlen(response),
+        0
+    );
+
+
+    printf(
+        "EXEC successful: %s -> %s\n",
+        requested_command,
+        output
     );
 }
 
@@ -578,27 +785,78 @@ void *handle_client(void *arg)
 
 
         /*
-         * Other commands will be added later:
-         *
+         * ================================
          * EXEC
-         * PUT
-         * GET
-         * MONITOR START
-         * MONITOR STOP
+         * ================================
+         *
+         * Allowed:
+         *
+         * EXEC DATE
+         * EXEC UPTIME
+         * EXEC DISKFREE
+         * EXEC HOSTNAME
+         * EXEC WHOAMI
          */
+        if (strncmp(
+            buffer,
+            "EXEC ",
+            5
+        ) == 0)
+        {
+            /*
+             * Check whether a command
+             * was actually provided.
+             */
+            if (strlen(buffer) <= 5)
+            {
+                char response[] =
+                    "ERR 002 COMMAND_NOT_ALLOWED\n";
+
+                send(
+                    client_fd,
+                    response,
+                    strlen(response),
+                    0
+                );
+
+                printf(
+                    "EXEC rejected: empty command.\n"
+                );
+
+                continue;
+            }
+
+
+            /*
+             * Handle EXEC command.
+             */
+            handle_exec(
+                client_fd,
+                buffer
+            );
+
+            continue;
+        }
 
 
         /*
-         * Temporary response
+         * ================================
+         * UNKNOWN COMMAND
+         * ================================
          */
         char response[] =
-            "OK COMMAND_RECEIVED\n";
+            "ERR 005 UNKNOWN_COMMAND\n";
 
         send(
             client_fd,
             response,
             strlen(response),
             0
+        );
+
+        printf(
+            "Unknown command received: %s\n",
+            buffer
         );
     }
 
@@ -710,23 +968,33 @@ int main()
     printf("=================================\n");
     printf("      RemoteOps Agent Started\n");
     printf("=================================\n");
+
     printf(
         "Listening on port : %d\n",
         PORT
     );
+
     printf(
         "SID                : %s\n",
         SID
     );
+
     printf(
         "Authentication     : Enabled\n"
     );
+
     printf(
         "SYSINFO            : Enabled\n"
     );
+
     printf(
         "LISTPROC           : Enabled\n"
     );
+
+    printf(
+        "EXEC               : Enabled\n"
+    );
+
     printf("=================================\n\n");
 
 
