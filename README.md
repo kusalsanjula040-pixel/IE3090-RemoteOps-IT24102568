@@ -279,3 +279,103 @@ This prevents the Controller from directly executing unauthorized Linux commands
 
 
 
+## PUT and GET – File Transfer
+
+The Controller and Agent can transfer files in either direction via RemoteOps. Commands to transfer files must be successful.
+
+### PUT – Upload File
+
+Uploads a file to the Agent from the Controller.
+
+text
+PUT <filename>
+
+
+Example:
+
+text
+RemoteOps> PUT test.txt
+Agent: OK READY SID:8652
+Agent: OK FILE_RECEIVED SID:8652
+PUT completed successfully.
+
+
+The files uploaded are kept in:
+
+text
+./agentfiles/568/
+
+
+### GET – Download File
+
+Downloads a file from the Agent to the Controller.
+
+text
+GET <filename>
+
+
+Example:
+
+text
+RemoteOps> GET test.txt
+Agent: OK FILE_READY SID:8652 SIZE:30
+Agent: OK FILE_SENT SID:8652
+GET completed successfully.
+
+
+Files downloaded will be saved as:
+
+text
+received_<filename>
+
+
+Example:
+
+text
+received_test.txt
+
+
+### File Transfer Features
+
+Reliable file transfer using TCP.
+* Supports text and binary files
+Before transferring file data, it also transfers file size.
+Implements exact-byte send/receive loops
+Supports files up to 64-bit sizes
+Path traversal is prevented with filename validation
+The name of the resource to be modified or retrieved must be authenticated before PUT/GET.
+Successful transfers are indicated by final acknowledgements.
+
+### Testing
+
+Create a test file:
+
+bash
+echo "Hello RemoteOps" > test.txt
+
+
+Authenticate and upload:
+
+text
+AUTH OPS-2568
+PUT test.txt
+
+
+Download the file:
+
+text
+GET test.txt
+
+
+Verify the files:
+
+bash
+ls -l agentfiles/568/
+ls -l received_test.txt
+cmp test.txt received_test.txt
+```
+
+When `cmp` does not return anything, the file uploaded and downloaded are the same.
+
+
+ |

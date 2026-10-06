@@ -5,6 +5,9 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <stdint.h>
+#include <errno.h>
 
 #define PORT 9410
 #define BUFFER_SIZE 1024
@@ -12,25 +15,237 @@
 #define AUTH_TOKEN "OPS-2568"
 #define SID "8652"
 
+#define STORAGE_PARENT "./agentfiles"
+#define STORAGE_DIR "./agentfiles/568"
+
 
 /*
- * Get CPU load from /proc/loadavg
+ * ============================================================
+ * SEND ALL
+ * ============================================================
+ */
+int send_all(
+    int socket_fd,
+    const void *data,
+    size_t total_bytes
+)
+{
+    size_t total_sent = 0;
+
+    const char *buffer = (const char *)data;
+
+    while (total_sent < total_bytes)
+    {
+        ssize_t bytes_sent = send(
+            socket_fd,
+            buffer + total_sent,
+            total_bytes - total_sent,
+            0
+        );
+
+        if (bytes_sent <= 0)
+        {
+            return -1;
+        }
+
+        total_sent += bytes_sent;
+    }
+
+    return 0;
+}
+
+
+/*
+ * ============================================================
+ * RECEIVE ALL
+ * ============================================================
+ */
+int recv_all(
+    int socket_fd,
+    void *data,
+    size_t total_bytes
+)
+{
+    size_t total_received = 0;
+
+    char *buffer = (char *)data;
+
+    while (total_received < total_bytes)
+    {
+        ssize_t bytes_received = recv(
+            socket_fd,
+            buffer + total_received,
+            total_bytes - total_received,
+            0
+        );
+
+        if (bytes_received <= 0)
+        {
+            return -1;
+        }
+
+        total_received += bytes_received;
+    }
+
+    return 0;
+}
+
+
+/*
+ * ============================================================
+ * UINT64 NETWORK BYTE ORDER
+ * ============================================================
+ */
+uint64_t htonll(uint64_t value)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+
+    return ((uint64_t)htonl((uint32_t)(value & 0xFFFFFFFFULL)) << 32)
+           |
+           htonl((uint32_t)(value >> 32));
+
+#else
+
+    return value;
+
+#endif
+}
+
+
+uint64_t ntohll(uint64_t value)
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+
+    return ((uint64_t)ntohl((uint32_t)(value & 0xFFFFFFFFULL)) << 32)
+           |
+           ntohl((uint32_t)(value >> 32));
+
+#else
+
+    return value;
+
+#endif
+}
+
+
+/*
+ * ============================================================
+ * RECEIVE LINE
+ * ============================================================
+ */
+int recv_line(
+    int socket_fd,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t index = 0;
+
+    while (index < buffer_size - 1)
+    {
+        char character;
+
+        ssize_t result = recv(
+            socket_fd,
+            &character,
+            1,
+            0
+        );
+
+        if (result <= 0)
+        {
+            return -1;
+        }
+
+        if (character == '\n')
+        {
+            break;
+        }
+
+        if (character != '\r')
+        {
+            buffer[index++] = character;
+        }
+    }
+
+    buffer[index] = '\0';
+
+    return (int)index;
+}
+
+
+/*
+ * ============================================================
+ * ENSURE STORAGE DIRECTORY
+ * ============================================================
+ */
+int ensure_storage_directory()
+{
+    /*
+     * Create parent directory.
+     */
+    if (
+        mkdir(
+            STORAGE_PARENT,
+            0755
+        ) < 0 &&
+        errno != EEXIST
+    )
+    {
+        return -1;
+    }
+
+
+    /*
+     * Create student-specific directory.
+     */
+    if (
+        mkdir(
+            STORAGE_DIR,
+            0755
+        ) < 0 &&
+        errno != EEXIST
+    )
+    {
+        return -1;
+    }
+
+
+    return 0;
+}
+
+
+/*
+ * ============================================================
+ * GET CPU LOAD
+ * ============================================================
  */
 double get_cpu_load()
 {
     FILE *fp;
+
     double load1;
 
-    fp = fopen("/proc/loadavg", "r");
+    fp = fopen(
+        "/proc/loadavg",
+        "r"
+    );
 
     if (fp == NULL)
     {
         return -1;
     }
 
-    if (fscanf(fp, "%lf", &load1) != 1)
+    if (
+        fscanf(
+            fp,
+            "%lf",
+            &load1
+        ) != 1
+    )
     {
         fclose(fp);
+
         return -1;
     }
 
@@ -41,31 +256,56 @@ double get_cpu_load()
 
 
 /*
- * Get memory usage percentage
+ * ============================================================
+ * GET MEMORY USAGE
+ * ============================================================
  */
 int get_memory_usage()
 {
     FILE *fp;
+
     char line[256];
 
     long mem_total = 0;
+
     long mem_available = 0;
 
-    fp = fopen("/proc/meminfo", "r");
+    fp = fopen(
+        "/proc/meminfo",
+        "r"
+    );
 
     if (fp == NULL)
     {
         return -1;
     }
 
-    while (fgets(line, sizeof(line), fp) != NULL)
+    while (
+        fgets(
+            line,
+            sizeof(line),
+            fp
+        ) != NULL
+    )
     {
-        if (sscanf(line, "MemTotal: %ld kB", &mem_total) == 1)
+        if (
+            sscanf(
+                line,
+                "MemTotal: %ld kB",
+                &mem_total
+            ) == 1
+        )
         {
             continue;
         }
 
-        if (sscanf(line, "MemAvailable: %ld kB", &mem_available) == 1)
+        if (
+            sscanf(
+                line,
+                "MemAvailable: %ld kB",
+                &mem_available
+            ) == 1
+        )
         {
             continue;
         }
@@ -78,30 +318,47 @@ int get_memory_usage()
         return -1;
     }
 
-    long mem_used = mem_total - mem_available;
+    long mem_used =
+        mem_total - mem_available;
 
-    return (int)((mem_used * 100) / mem_total);
+    return (int)(
+        (mem_used * 100) /
+        mem_total
+    );
 }
 
 
 /*
- * Get system uptime in seconds
+ * ============================================================
+ * GET SYSTEM UPTIME
+ * ============================================================
  */
 long get_uptime()
 {
     FILE *fp;
+
     double uptime;
 
-    fp = fopen("/proc/uptime", "r");
+    fp = fopen(
+        "/proc/uptime",
+        "r"
+    );
 
     if (fp == NULL)
     {
         return -1;
     }
 
-    if (fscanf(fp, "%lf", &uptime) != 1)
+    if (
+        fscanf(
+            fp,
+            "%lf",
+            &uptime
+        ) != 1
+    )
     {
         fclose(fp);
+
         return -1;
     }
 
@@ -112,17 +369,30 @@ long get_uptime()
 
 
 /*
- * Convert uptime seconds to HH:MM:SS
+ * ============================================================
+ * FORMAT UPTIME
+ * ============================================================
  */
-void format_uptime(long seconds, char *buffer, size_t size)
+void format_uptime(
+    long seconds,
+    char *buffer,
+    size_t size
+)
 {
     long hours;
+
     long minutes;
+
     long secs;
 
-    hours = seconds / 3600;
-    minutes = (seconds % 3600) / 60;
-    secs = seconds % 60;
+    hours =
+        seconds / 3600;
+
+    minutes =
+        (seconds % 3600) / 60;
+
+    secs =
+        seconds % 60;
 
     snprintf(
         buffer,
@@ -136,12 +406,13 @@ void format_uptime(long seconds, char *buffer, size_t size)
 
 
 /*
- * Handle LISTPROC command
- *
- * Gets currently running processes using
- * the Linux "ps" command.
+ * ============================================================
+ * LISTPROC
+ * ============================================================
  */
-void handle_listproc(int client_fd)
+void handle_listproc(
+    int client_fd
+)
 {
     FILE *process_pipe;
 
@@ -149,16 +420,6 @@ void handle_listproc(int client_fd)
 
     char response[BUFFER_SIZE];
 
-
-    /*
-     * Open a pipe to the ps command.
-     *
-     * ps -eo pid,user,comm
-     *
-     * PID  = Process ID
-     * USER = Process owner
-     * COMM = Command/process name
-     */
     process_pipe = popen(
         "ps -eo pid,user,comm --sort=pid",
         "r"
@@ -169,22 +430,15 @@ void handle_listproc(int client_fd)
         char error_response[] =
             "ERR 003 LISTPROC_FAILED\n";
 
-        send(
+        send_all(
             client_fd,
             error_response,
-            strlen(error_response),
-            0
+            strlen(error_response)
         );
-
-        printf("LISTPROC failed.\n");
 
         return;
     }
 
-
-    /*
-     * Send LISTPROC header first.
-     */
     snprintf(
         response,
         sizeof(response),
@@ -192,63 +446,39 @@ void handle_listproc(int client_fd)
         SID
     );
 
-    send(
+    send_all(
         client_fd,
         response,
-        strlen(response),
-        0
+        strlen(response)
     );
 
-
-    /*
-     * Read process information line by line.
-     */
-    while (fgets(
-        line,
-        sizeof(line),
-        process_pipe
-    ) != NULL)
+    while (
+        fgets(
+            line,
+            sizeof(line),
+            process_pipe
+        ) != NULL
+    )
     {
-        /*
-         * Send each process line
-         * to the Controller.
-         */
-        send(
+        send_all(
             client_fd,
             line,
-            strlen(line),
-            0
+            strlen(line)
         );
     }
 
+    pclose(
+        process_pipe
+    );
 
-    /*
-     * Close the pipe.
-     */
-    int status = pclose(process_pipe);
-
-    if (status == -1)
-    {
-        printf("LISTPROC pclose failed.\n");
-    }
-
-
-    /*
-     * Send end marker.
-     *
-     * Controller needs this marker to know
-     * that the process list has finished.
-     */
     char end_response[] =
         "END PROCS\n";
 
-    send(
+    send_all(
         client_fd,
         end_response,
-        strlen(end_response),
-        0
+        strlen(end_response)
     );
-
 
     printf(
         "LISTPROC sent successfully.\n"
@@ -257,103 +487,92 @@ void handle_listproc(int client_fd)
 
 
 /*
- * Handle EXEC command
- *
- * Allowed commands:
- *
- * EXEC DATE
- * EXEC UPTIME
- * EXEC DISKFREE
- * EXEC HOSTNAME
- * EXEC WHOAMI
- *
- * Only whitelisted commands are allowed.
+ * ============================================================
+ * EXEC
+ * ============================================================
  */
-void handle_exec(int client_fd, const char *command)
+void handle_exec(
+    int client_fd,
+    const char *command
+)
 {
     const char *linux_command = NULL;
 
     char response[BUFFER_SIZE];
+
     char output[BUFFER_SIZE];
 
     FILE *command_pipe;
 
     size_t used = 0;
 
-
-    /*
-     * Get the command after "EXEC "
-     *
-     * Example:
-     *
-     * EXEC HOSTNAME
-     *
-     * command + 5 gives:
-     *
-     * HOSTNAME
-     */
-    const char *requested_command = command + 5;
+    const char *requested_command =
+        command + 5;
 
 
-    /*
-     * Check the command against
-     * the allowed command list.
-     */
-
-    if (strcmp(requested_command, "DATE") == 0)
+    if (
+        strcmp(
+            requested_command,
+            "DATE"
+        ) == 0
+    )
     {
         linux_command = "date";
     }
-    else if (strcmp(requested_command, "UPTIME") == 0)
+    else if (
+        strcmp(
+            requested_command,
+            "UPTIME"
+        ) == 0
+    )
     {
         linux_command = "uptime";
     }
-    else if (strcmp(requested_command, "DISKFREE") == 0)
+    else if (
+        strcmp(
+            requested_command,
+            "DISKFREE"
+        ) == 0
+    )
     {
         linux_command = "df -h";
     }
-    else if (strcmp(requested_command, "HOSTNAME") == 0)
+    else if (
+        strcmp(
+            requested_command,
+            "HOSTNAME"
+        ) == 0
+    )
     {
         linux_command = "hostname";
     }
-    else if (strcmp(requested_command, "WHOAMI") == 0)
+    else if (
+        strcmp(
+            requested_command,
+            "WHOAMI"
+        ) == 0
+    )
     {
         linux_command = "whoami";
     }
     else
     {
-        /*
-         * Command is not in whitelist.
-         */
         snprintf(
             response,
             sizeof(response),
             "ERR 002 COMMAND_NOT_ALLOWED\n"
         );
 
-        send(
+        send_all(
             client_fd,
             response,
-            strlen(response),
-            0
-        );
-
-        printf(
-            "EXEC rejected: %s\n",
-            requested_command
+            strlen(response)
         );
 
         return;
     }
 
 
-    /*
-     * Execute only the fixed Linux command.
-     *
-     * Because linux_command comes only from
-     * the whitelist above, arbitrary commands
-     * cannot be executed.
-     */
     command_pipe = popen(
         linux_command,
         "r"
@@ -367,22 +586,16 @@ void handle_exec(int client_fd, const char *command)
             "ERR 004 EXEC_FAILED\n"
         );
 
-        send(
+        send_all(
             client_fd,
             response,
-            strlen(response),
-            0
+            strlen(response)
         );
-
-        printf("EXEC failed.\n");
 
         return;
     }
 
 
-    /*
-     * Clear output buffer.
-     */
     memset(
         output,
         0,
@@ -390,9 +603,6 @@ void handle_exec(int client_fd, const char *command)
     );
 
 
-    /*
-     * Read command output.
-     */
     while (
         used < sizeof(output) - 1 &&
         fgets(
@@ -402,24 +612,16 @@ void handle_exec(int client_fd, const char *command)
         ) != NULL
     )
     {
-        used = strlen(output);
+        used =
+            strlen(output);
     }
 
 
-    /*
-     * Close command pipe.
-     */
-    int status = pclose(command_pipe);
-
-    if (status == -1)
-    {
-        printf("EXEC pclose failed.\n");
-    }
+    pclose(
+        command_pipe
+    );
 
 
-    /*
-     * Remove trailing newline.
-     */
     while (
         used > 0 &&
         (
@@ -429,29 +631,26 @@ void handle_exec(int client_fd, const char *command)
     )
     {
         output[used - 1] = '\0';
+
         used--;
     }
 
 
     /*
-     * Create EXEC response.
+     * Limit output length to avoid truncation warning.
      */
     snprintf(
         response,
         sizeof(response),
-        "OK EXEC_RESULT %s\n",
+        "OK EXEC_RESULT %.990s\n",
         output
     );
 
 
-    /*
-     * Send result to Controller.
-     */
-    send(
+    send_all(
         client_fd,
         response,
-        strlen(response),
-        0
+        strlen(response)
     );
 
 
@@ -464,11 +663,676 @@ void handle_exec(int client_fd, const char *command)
 
 
 /*
- * Handle one connected Controller
+ * ============================================================
+ * VALIDATE FILENAME
+ * ============================================================
  */
-void *handle_client(void *arg)
+int valid_filename(
+    const char *filename
+)
 {
-    int client_fd = *(int *)arg;
+    if (
+        filename == NULL ||
+        strlen(filename) == 0
+    )
+    {
+        return 0;
+    }
+
+    if (
+        strcmp(
+            filename,
+            "."
+        ) == 0 ||
+        strcmp(
+            filename,
+            ".."
+        ) == 0
+    )
+    {
+        return 0;
+    }
+
+    if (
+        strchr(
+            filename,
+            '/'
+        ) != NULL ||
+        strchr(
+            filename,
+            '\\'
+        ) != NULL
+    )
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/*
+ * ============================================================
+ * PUT - FILE UPLOAD
+ * ============================================================
+ */
+void handle_put(
+    int client_fd,
+    const char *command
+)
+{
+    char filename[256];
+
+    char filepath[512];
+
+    char response[BUFFER_SIZE];
+
+
+    /*
+     * Extract filename.
+     */
+    if (
+        sscanf(
+            command + 4,
+            "%255s",
+            filename
+        ) != 1
+    )
+    {
+        char error_response[] =
+            "ERR 006 INVALID_FILENAME\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    /*
+     * Validate filename.
+     */
+    if (
+        !valid_filename(filename)
+    )
+    {
+        char error_response[] =
+            "ERR 006 INVALID_FILENAME\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    /*
+     * Make sure storage directory exists.
+     */
+    if (
+        ensure_storage_directory() < 0
+    )
+    {
+        char error_response[] =
+            "ERR 007 STORAGE_ERROR\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        printf(
+            "PUT: storage directory error.\n"
+        );
+
+        return;
+    }
+
+
+    /*
+     * Build destination path.
+     */
+    snprintf(
+        filepath,
+        sizeof(filepath),
+        "%s/%s",
+        STORAGE_DIR,
+        filename
+    );
+
+
+    /*
+     * Tell Controller that Agent is ready.
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK READY SID:%s\n",
+        SID
+    );
+
+    if (
+        send_all(
+            client_fd,
+            response,
+            strlen(response)
+        ) < 0
+    )
+    {
+        return;
+    }
+
+
+    /*
+     * Receive 8-byte file size.
+     */
+    uint64_t network_file_size;
+
+    if (
+        recv_all(
+            client_fd,
+            &network_file_size,
+            sizeof(network_file_size)
+        ) < 0
+    )
+    {
+        printf(
+            "PUT: failed to receive file size.\n"
+        );
+
+        return;
+    }
+
+
+    uint64_t file_size =
+        ntohll(
+            network_file_size
+        );
+
+
+    printf(
+        "PUT: Receiving %s (%llu bytes)\n",
+        filename,
+        (unsigned long long)file_size
+    );
+
+
+    /*
+     * Open destination file.
+     */
+    FILE *output_file =
+        fopen(
+            filepath,
+            "wb"
+        );
+
+    if (output_file == NULL)
+    {
+        char error_response[] =
+            "ERR 007 STORAGE_ERROR\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    /*
+     * Receive file bytes.
+     */
+    char file_buffer[BUFFER_SIZE];
+
+    uint64_t remaining =
+        file_size;
+
+
+    while (remaining > 0)
+    {
+        size_t chunk_size;
+
+        if (
+            remaining > BUFFER_SIZE
+        )
+        {
+            chunk_size =
+                BUFFER_SIZE;
+        }
+        else
+        {
+            chunk_size =
+                (size_t)remaining;
+        }
+
+
+        ssize_t bytes_received =
+            recv(
+                client_fd,
+                file_buffer,
+                chunk_size,
+                0
+            );
+
+
+        if (bytes_received <= 0)
+        {
+            fclose(
+                output_file
+            );
+
+            remove(
+                filepath
+            );
+
+            printf(
+                "PUT: incomplete transfer.\n"
+            );
+
+            return;
+        }
+
+
+        size_t bytes_written =
+            fwrite(
+                file_buffer,
+                1,
+                bytes_received,
+                output_file
+            );
+
+
+        if (
+            bytes_written !=
+            (size_t)bytes_received
+        )
+        {
+            fclose(
+                output_file
+            );
+
+            remove(
+                filepath
+            );
+
+            printf(
+                "PUT: write error.\n"
+            );
+
+            return;
+        }
+
+
+        remaining -=
+            (uint64_t)bytes_received;
+    }
+
+
+    fclose(
+        output_file
+    );
+
+
+    /*
+     * Final PUT acknowledgement.
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK FILE_RECEIVED SID:%s\n",
+        SID
+    );
+
+
+    send_all(
+        client_fd,
+        response,
+        strlen(response)
+    );
+
+
+    printf(
+        "PUT successful: %s (%llu bytes)\n",
+        filename,
+        (unsigned long long)file_size
+    );
+}
+
+
+/*
+ * ============================================================
+ * GET - FILE DOWNLOAD
+ * ============================================================
+ */
+void handle_get(
+    int client_fd,
+    const char *command
+)
+{
+    char filename[256];
+
+    char filepath[512];
+
+    char response[BUFFER_SIZE];
+
+
+    /*
+     * Extract filename.
+     */
+    if (
+        sscanf(
+            command + 4,
+            "%255s",
+            filename
+        ) != 1
+    )
+    {
+        char error_response[] =
+            "ERR 008 INVALID_FILENAME\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    /*
+     * Validate filename.
+     */
+    if (
+        !valid_filename(filename)
+    )
+    {
+        char error_response[] =
+            "ERR 008 INVALID_FILENAME\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    /*
+     * Build source path.
+     */
+    snprintf(
+        filepath,
+        sizeof(filepath),
+        "%s/%s",
+        STORAGE_DIR,
+        filename
+    );
+
+
+    /*
+     * Open file.
+     */
+    FILE *input_file =
+        fopen(
+            filepath,
+            "rb"
+        );
+
+
+    if (input_file == NULL)
+    {
+        char error_response[] =
+            "ERR 009 FILE_NOT_FOUND\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        printf(
+            "GET: file not found: %s\n",
+            filename
+        );
+
+        return;
+    }
+
+
+    /*
+     * Get file size.
+     */
+    if (
+        fseek(
+            input_file,
+            0,
+            SEEK_END
+        ) != 0
+    )
+    {
+        fclose(
+            input_file
+        );
+
+        char error_response[] =
+            "ERR 010 FILE_ERROR\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    long file_size_long =
+        ftell(
+            input_file
+        );
+
+
+    if (
+        file_size_long < 0
+    )
+    {
+        fclose(
+            input_file
+        );
+
+        char error_response[] =
+            "ERR 010 FILE_ERROR\n";
+
+        send_all(
+            client_fd,
+            error_response,
+            strlen(error_response)
+        );
+
+        return;
+    }
+
+
+    rewind(
+        input_file
+    );
+
+
+    uint64_t file_size =
+        (uint64_t)file_size_long;
+
+
+    /*
+     * Send header.
+     *
+     * Example:
+     *
+     * OK FILE_READY SID:8652 SIZE:30
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK FILE_READY SID:%s SIZE:%llu\n",
+        SID,
+        (unsigned long long)file_size
+    );
+
+
+    if (
+        send_all(
+            client_fd,
+            response,
+            strlen(response)
+        ) < 0
+    )
+    {
+        fclose(
+            input_file
+        );
+
+        return;
+    }
+
+
+    /*
+     * Send exact file bytes.
+     */
+    char file_buffer[BUFFER_SIZE];
+
+    uint64_t remaining =
+        file_size;
+
+
+    while (
+        remaining > 0
+    )
+    {
+        size_t chunk_size;
+
+        if (
+            remaining > BUFFER_SIZE
+        )
+        {
+            chunk_size =
+                BUFFER_SIZE;
+        }
+        else
+        {
+            chunk_size =
+                (size_t)remaining;
+        }
+
+
+        size_t bytes_read =
+            fread(
+                file_buffer,
+                1,
+                chunk_size,
+                input_file
+            );
+
+
+        if (
+            bytes_read == 0
+        )
+        {
+            fclose(
+                input_file
+            );
+
+            printf(
+                "GET: file read error.\n"
+            );
+
+            return;
+        }
+
+
+        if (
+            send_all(
+                client_fd,
+                file_buffer,
+                bytes_read
+            ) < 0
+        )
+        {
+            fclose(
+                input_file
+            );
+
+            printf(
+                "GET: transfer failed.\n"
+            );
+
+            return;
+        }
+
+
+        remaining -=
+            (uint64_t)bytes_read;
+    }
+
+
+    fclose(
+        input_file
+    );
+
+
+    /*
+     * IMPORTANT:
+     *
+     * Send final ACK after all file bytes.
+     *
+     * Controller waits for this after receiving
+     * exactly SIZE bytes.
+     */
+    snprintf(
+        response,
+        sizeof(response),
+        "OK FILE_SENT SID:%s\n",
+        SID
+    );
+
+
+    send_all(
+        client_fd,
+        response,
+        strlen(response)
+    );
+
+
+    printf(
+        "GET successful: %s (%llu bytes)\n",
+        filename,
+        (unsigned long long)file_size
+    );
+}
+
+
+/*
+ * ============================================================
+ * HANDLE CLIENT
+ * ============================================================
+ */
+void *handle_client(
+    void *arg
+)
+{
+    int client_fd =
+        *(int *)arg;
 
     free(arg);
 
@@ -476,7 +1340,10 @@ void *handle_client(void *arg)
 
     int authenticated = 0;
 
-    printf("Client thread started.\n");
+
+    printf(
+        "Client thread started.\n"
+    );
 
 
     while (1)
@@ -484,32 +1351,27 @@ void *handle_client(void *arg)
         memset(
             buffer,
             0,
-            BUFFER_SIZE
+            sizeof(buffer)
         );
-
-        int bytes_received = recv(
-            client_fd,
-            buffer,
-            BUFFER_SIZE - 1,
-            0
-        );
-
-        if (bytes_received <= 0)
-        {
-            printf("Client disconnected.\n");
-            break;
-        }
-
-        buffer[bytes_received] = '\0';
 
 
         /*
-         * Remove newline
+         * Receive command line.
          */
-        buffer[strcspn(
-            buffer,
-            "\r\n"
-        )] = '\0';
+        if (
+            recv_line(
+                client_fd,
+                buffer,
+                sizeof(buffer)
+            ) < 0
+        )
+        {
+            printf(
+                "Client disconnected.\n"
+            );
+
+            break;
+        }
 
 
         printf(
@@ -519,15 +1381,17 @@ void *handle_client(void *arg)
 
 
         /*
-         * ================================
-         * AUTHENTICATION
-         * ================================
+         * ====================================================
+         * AUTH
+         * ====================================================
          */
-        if (strncmp(
-            buffer,
-            "AUTH ",
-            5
-        ) == 0)
+        if (
+            strncmp(
+                buffer,
+                "AUTH ",
+                5
+            ) == 0
+        )
         {
             char received_token[100];
 
@@ -538,9 +1402,6 @@ void *handle_client(void *arg)
             );
 
 
-            /*
-             * Get token after "AUTH "
-             */
             sscanf(
                 buffer + 5,
                 "%99s",
@@ -548,13 +1409,12 @@ void *handle_client(void *arg)
             );
 
 
-            /*
-             * Check authentication token
-             */
-            if (strcmp(
-                received_token,
-                AUTH_TOKEN
-            ) == 0)
+            if (
+                strcmp(
+                    received_token,
+                    AUTH_TOKEN
+                ) == 0
+            )
             {
                 authenticated = 1;
 
@@ -567,11 +1427,10 @@ void *handle_client(void *arg)
                     SID
                 );
 
-                send(
+                send_all(
                     client_fd,
                     response,
-                    strlen(response),
-                    0
+                    strlen(response)
                 );
 
                 printf(
@@ -592,11 +1451,10 @@ void *handle_client(void *arg)
                     SID
                 );
 
-                send(
+                send_all(
                     client_fd,
                     response,
-                    strlen(response),
-                    0
+                    strlen(response)
                 );
 
                 printf(
@@ -609,14 +1467,16 @@ void *handle_client(void *arg)
 
 
         /*
-         * ================================
+         * ====================================================
          * QUIT
-         * ================================
+         * ====================================================
          */
-        if (strcmp(
-            buffer,
-            "QUIT"
-        ) == 0)
+        if (
+            strcmp(
+                buffer,
+                "QUIT"
+            ) == 0
+        )
         {
             char response[BUFFER_SIZE];
 
@@ -627,15 +1487,10 @@ void *handle_client(void *arg)
                 SID
             );
 
-            send(
+            send_all(
                 client_fd,
                 response,
-                strlen(response),
-                0
-            );
-
-            printf(
-                "Client requested QUIT.\n"
+                strlen(response)
             );
 
             break;
@@ -643,23 +1498,19 @@ void *handle_client(void *arg)
 
 
         /*
-         * Reject commands if not authenticated
+         * ====================================================
+         * AUTH REQUIRED
+         * ====================================================
          */
-        if (authenticated == 0)
+        if (!authenticated)
         {
             char response[] =
                 "ERR 001 AUTH_REQUIRED\n";
 
-            send(
+            send_all(
                 client_fd,
                 response,
-                strlen(response),
-                0
-            );
-
-            printf(
-                "Command rejected - "
-                "authentication required.\n"
+                strlen(response)
             );
 
             continue;
@@ -667,63 +1518,50 @@ void *handle_client(void *arg)
 
 
         /*
-         * ================================
+         * ====================================================
          * SYSINFO
-         * ================================
+         * ====================================================
          */
-        if (strcmp(
-            buffer,
-            "SYSINFO"
-        ) == 0)
+        if (
+            strcmp(
+                buffer,
+                "SYSINFO"
+            ) == 0
+        )
         {
-            double cpu;
-            int memory;
-            long uptime_seconds;
+            double cpu =
+                get_cpu_load();
+
+            int memory =
+                get_memory_usage();
+
+            long uptime_seconds =
+                get_uptime();
 
             char uptime_text[32];
 
             char response[BUFFER_SIZE];
 
 
-            /*
-             * Get system information
-             */
-            cpu = get_cpu_load();
-
-            memory = get_memory_usage();
-
-            uptime_seconds = get_uptime();
-
-
-            /*
-             * Check if information
-             * was successfully retrieved
-             */
-            if (cpu < 0 ||
+            if (
+                cpu < 0 ||
                 memory < 0 ||
-                uptime_seconds < 0)
+                uptime_seconds < 0
+            )
             {
                 char error_response[] =
                     "ERR SYSINFO_FAILED\n";
 
-                send(
+                send_all(
                     client_fd,
                     error_response,
-                    strlen(error_response),
-                    0
-                );
-
-                printf(
-                    "SYSINFO failed.\n"
+                    strlen(error_response)
                 );
 
                 continue;
             }
 
 
-            /*
-             * Format uptime
-             */
             format_uptime(
                 uptime_seconds,
                 uptime_text,
@@ -731,9 +1569,6 @@ void *handle_client(void *arg)
             );
 
 
-            /*
-             * Create SYSINFO response
-             */
             snprintf(
                 response,
                 sizeof(response),
@@ -748,20 +1583,10 @@ void *handle_client(void *arg)
             );
 
 
-            /*
-             * Send SYSINFO response
-             */
-            send(
+            send_all(
                 client_fd,
                 response,
-                strlen(response),
-                0
-            );
-
-
-            printf(
-                "SYSINFO sent: %s",
-                response
+                strlen(response)
             );
 
             continue;
@@ -769,67 +1594,54 @@ void *handle_client(void *arg)
 
 
         /*
-         * ================================
+         * ====================================================
          * LISTPROC
-         * ================================
+         * ====================================================
          */
-        if (strcmp(
-            buffer,
-            "LISTPROC"
-        ) == 0)
+        if (
+            strcmp(
+                buffer,
+                "LISTPROC"
+            ) == 0
+        )
         {
-            handle_listproc(client_fd);
+            handle_listproc(
+                client_fd
+            );
 
             continue;
         }
 
 
         /*
-         * ================================
+         * ====================================================
          * EXEC
-         * ================================
-         *
-         * Allowed:
-         *
-         * EXEC DATE
-         * EXEC UPTIME
-         * EXEC DISKFREE
-         * EXEC HOSTNAME
-         * EXEC WHOAMI
+         * ====================================================
          */
-        if (strncmp(
-            buffer,
-            "EXEC ",
-            5
-        ) == 0)
+        if (
+            strncmp(
+                buffer,
+                "EXEC ",
+                5
+            ) == 0
+        )
         {
-            /*
-             * Check whether a command
-             * was actually provided.
-             */
-            if (strlen(buffer) <= 5)
+            if (
+                strlen(buffer) <= 5
+            )
             {
                 char response[] =
                     "ERR 002 COMMAND_NOT_ALLOWED\n";
 
-                send(
+                send_all(
                     client_fd,
                     response,
-                    strlen(response),
-                    0
-                );
-
-                printf(
-                    "EXEC rejected: empty command.\n"
+                    strlen(response)
                 );
 
                 continue;
             }
 
-
-            /*
-             * Handle EXEC command.
-             */
             handle_exec(
                 client_fd,
                 buffer
@@ -840,37 +1652,84 @@ void *handle_client(void *arg)
 
 
         /*
-         * ================================
+         * ====================================================
+         * PUT
+         * ====================================================
+         */
+        if (
+            strncmp(
+                buffer,
+                "PUT ",
+                4
+            ) == 0
+        )
+        {
+            handle_put(
+                client_fd,
+                buffer
+            );
+
+            continue;
+        }
+
+
+        /*
+         * ====================================================
+         * GET
+         * ====================================================
+         */
+        if (
+            strncmp(
+                buffer,
+                "GET ",
+                4
+            ) == 0
+        )
+        {
+            handle_get(
+                client_fd,
+                buffer
+            );
+
+            continue;
+        }
+
+
+        /*
+         * ====================================================
          * UNKNOWN COMMAND
-         * ================================
+         * ====================================================
          */
         char response[] =
             "ERR 005 UNKNOWN_COMMAND\n";
 
-        send(
+        send_all(
             client_fd,
             response,
-            strlen(response),
-            0
-        );
-
-        printf(
-            "Unknown command received: %s\n",
-            buffer
+            strlen(response)
         );
     }
 
 
-    close(client_fd);
+    close(
+        client_fd
+    );
+
 
     printf(
         "Client thread finished.\n"
     );
 
+
     return NULL;
 }
 
 
+/*
+ * ============================================================
+ * MAIN
+ * ============================================================
+ */
 int main()
 {
     int server_fd;
@@ -879,20 +1738,25 @@ int main()
 
 
     /*
-     * 1. Create socket
+     * Create socket.
      */
-    server_fd = socket(
-        AF_INET,
-        SOCK_STREAM,
-        0
-    );
+    server_fd =
+        socket(
+            AF_INET,
+            SOCK_STREAM,
+            0
+        );
 
-    if (server_fd < 0)
+
+    if (
+        server_fd < 0
+    )
     {
         perror("socket");
 
         return 1;
     }
+
 
     printf(
         "Socket created successfully.\n"
@@ -900,7 +1764,7 @@ int main()
 
 
     /*
-     * Allow port reuse
+     * Allow port reuse.
      */
     int opt = 1;
 
@@ -914,8 +1778,30 @@ int main()
 
 
     /*
-     * 2. Configure server address
+     * Create storage directory at startup.
      */
+    if (
+        ensure_storage_directory() < 0
+    )
+    {
+        fprintf(
+            stderr,
+            "Warning: Could not create %s\n",
+            STORAGE_DIR
+        );
+    }
+
+
+    /*
+     * Server address.
+     */
+    memset(
+        &server_addr,
+        0,
+        sizeof(server_addr)
+    );
+
+
     server_addr.sin_family =
         AF_INET;
 
@@ -927,13 +1813,15 @@ int main()
 
 
     /*
-     * 3. Bind
+     * Bind.
      */
-    if (bind(
-        server_fd,
-        (struct sockaddr *)&server_addr,
-        sizeof(server_addr)
-    ) < 0)
+    if (
+        bind(
+            server_fd,
+            (struct sockaddr *)&server_addr,
+            sizeof(server_addr)
+        ) < 0
+    )
     {
         perror("bind");
 
@@ -942,6 +1830,7 @@ int main()
         return 1;
     }
 
+
     printf(
         "Server bound to port %d.\n",
         PORT
@@ -949,12 +1838,14 @@ int main()
 
 
     /*
-     * 4. Listen
+     * Listen.
      */
-    if (listen(
-        server_fd,
-        5
-    ) < 0)
+    if (
+        listen(
+            server_fd,
+            5
+        ) < 0
+    )
     {
         perror("listen");
 
@@ -964,10 +1855,22 @@ int main()
     }
 
 
+    /*
+     * Startup banner.
+     */
     printf("\n");
-    printf("=================================\n");
-    printf("      RemoteOps Agent Started\n");
-    printf("=================================\n");
+
+    printf(
+        "=================================\n"
+    );
+
+    printf(
+        "      RemoteOps Agent Started\n"
+    );
+
+    printf(
+        "=================================\n"
+    );
 
     printf(
         "Listening on port : %d\n",
@@ -995,11 +1898,26 @@ int main()
         "EXEC               : Enabled\n"
     );
 
-    printf("=================================\n\n");
+    printf(
+        "PUT                : Enabled\n"
+    );
+
+    printf(
+        "GET                : Enabled\n"
+    );
+
+    printf(
+        "Storage            : %s\n",
+        STORAGE_DIR
+    );
+
+    printf(
+        "=================================\n\n"
+    );
 
 
     /*
-     * 5. Accept multiple Controllers
+     * Accept Controllers.
      */
     while (1)
     {
@@ -1009,14 +1927,17 @@ int main()
             sizeof(client_addr);
 
 
-        int client_fd = accept(
-            server_fd,
-            (struct sockaddr *)&client_addr,
-            &client_len
-        );
+        int client_fd =
+            accept(
+                server_fd,
+                (struct sockaddr *)&client_addr,
+                &client_len
+            );
 
 
-        if (client_fd < 0)
+        if (
+            client_fd < 0
+        )
         {
             perror("accept");
 
@@ -1029,13 +1950,15 @@ int main()
         );
 
 
-        /*
-         * Allocate memory for client socket
-         */
         int *client_socket =
-            malloc(sizeof(int));
+            malloc(
+                sizeof(int)
+            );
 
-        if (client_socket == NULL)
+
+        if (
+            client_socket == NULL
+        )
         {
             perror("malloc");
 
@@ -1044,20 +1967,22 @@ int main()
             continue;
         }
 
-        *client_socket = client_fd;
+
+        *client_socket =
+            client_fd;
 
 
-        /*
-         * Create thread
-         */
         pthread_t thread;
 
-        if (pthread_create(
-            &thread,
-            NULL,
-            handle_client,
-            client_socket
-        ) != 0)
+
+        if (
+            pthread_create(
+                &thread,
+                NULL,
+                handle_client,
+                client_socket
+            ) != 0
+        )
         {
             perror("pthread_create");
 
@@ -1069,15 +1994,16 @@ int main()
         }
 
 
-        /*
-         * Thread does not need
-         * to be joined
-         */
-        pthread_detach(thread);
+        pthread_detach(
+            thread
+        );
     }
 
 
-    close(server_fd);
+    close(
+        server_fd
+    );
+
 
     return 0;
 }
