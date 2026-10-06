@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #define PORT 9410
 #define BUFFER_SIZE 1024
@@ -21,15 +23,25 @@
 
 #define UDP_PORT 9410
 
+#define ERR_LINE_TOO_LONG       -2
+#define ERR_CONNECTION_CLOSED   -3
+
 volatile int monitor_running = 0;
 volatile int monitor_stop_requested = 0;
+
 char monitor_controller_ip[INET_ADDRSTRLEN];
 char connected_controller_ip[INET_ADDRSTRLEN];
-pthread_t monitor_thread;
 
+pthread_t monitor_thread;
 
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+
+/*
+ * ============================================================
+ * LOG EVENT
+ * ============================================================
+ */
 void log_event(const char *event)
 {
     FILE *log_file;
@@ -87,23 +99,36 @@ int send_all(
 {
     size_t total_sent = 0;
 
-    const char *buffer = (const char *)data;
+    const char *buffer =
+        (const char *)data;
 
     while (total_sent < total_bytes)
     {
-        ssize_t bytes_sent = send(
-            socket_fd,
-            buffer + total_sent,
-            total_bytes - total_sent,
-            0
-        );
+        ssize_t bytes_sent =
+            send(
+                socket_fd,
+                buffer + total_sent,
+                total_bytes - total_sent,
+                0
+            );
 
-        if (bytes_sent <= 0)
+        if (bytes_sent < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            return -1;
+        }
+
+        if (bytes_sent == 0)
         {
             return -1;
         }
 
-        total_sent += bytes_sent;
+        total_sent +=
+            (size_t)bytes_sent;
     }
 
     return 0;
@@ -123,23 +148,36 @@ int recv_all(
 {
     size_t total_received = 0;
 
-    char *buffer = (char *)data;
+    char *buffer =
+        (char *)data;
 
     while (total_received < total_bytes)
     {
-        ssize_t bytes_received = recv(
-            socket_fd,
-            buffer + total_received,
-            total_bytes - total_received,
-            0
-        );
+        ssize_t bytes_received =
+            recv(
+                socket_fd,
+                buffer + total_received,
+                total_bytes - total_received,
+                0
+            );
 
-        if (bytes_received <= 0)
+        if (bytes_received < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            return -1;
+        }
+
+        if (bytes_received == 0)
         {
             return -1;
         }
 
-        total_received += bytes_received;
+        total_received +=
+            (size_t)bytes_received;
     }
 
     return 0;
@@ -155,9 +193,14 @@ uint64_t htonll(uint64_t value)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 
-    return ((uint64_t)htonl((uint32_t)(value & 0xFFFFFFFFULL)) << 32)
-           |
-           htonl((uint32_t)(value >> 32));
+    return
+        ((uint64_t)htonl(
+            (uint32_t)(value & 0xFFFFFFFFULL)
+        ) << 32)
+        |
+        htonl(
+            (uint32_t)(value >> 32)
+        );
 
 #else
 
@@ -171,9 +214,14 @@ uint64_t ntohll(uint64_t value)
 {
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 
-    return ((uint64_t)ntohl((uint32_t)(value & 0xFFFFFFFFULL)) << 32)
-           |
-           ntohl((uint32_t)(value >> 32));
+    return
+        ((uint64_t)ntohl(
+            (uint32_t)(value & 0xFFFFFFFFULL)
+        ) << 32)
+        |
+        ntohl(
+            (uint32_t)(value >> 32)
+        );
 
 #else
 
@@ -187,6 +235,12 @@ uint64_t ntohll(uint64_t value)
  * ============================================================
  * RECEIVE LINE
  * ============================================================
+ *
+ * Return values:
+ *
+ * >= 0  : number of characters received
+ * -1    : socket error / disconnect
+ * -2    : line too long
  */
 int recv_line(
     int socket_fd,
@@ -195,19 +249,39 @@ int recv_line(
 )
 {
     size_t index = 0;
+    int too_long = 0;
 
-    while (index < buffer_size - 1)
+    if (
+        buffer == NULL ||
+        buffer_size < 2
+    )
+    {
+        return -1;
+    }
+
+    while (1)
     {
         char character;
 
-        ssize_t result = recv(
-            socket_fd,
-            &character,
-            1,
-            0
-        );
+        ssize_t result =
+            recv(
+                socket_fd,
+                &character,
+                1,
+                0
+            );
 
-        if (result <= 0)
+        if (result < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            return -1;
+        }
+
+        if (result == 0)
         {
             return -1;
         }
@@ -217,15 +291,56 @@ int recv_line(
             break;
         }
 
-        if (character != '\r')
+        if (character == '\r')
         {
-            buffer[index++] = character;
+            continue;
+        }
+
+        if (index < buffer_size - 1)
+        {
+            buffer[index++] =
+                character;
+        }
+        else
+        {
+            too_long = 1;
         }
     }
 
     buffer[index] = '\0';
 
+    if (too_long)
+    {
+        return ERR_LINE_TOO_LONG;
+    }
+
     return (int)index;
+}
+
+
+/*
+ * ============================================================
+ * SEND ERROR RESPONSE
+ * ============================================================
+ */
+void send_error(
+    int client_fd,
+    const char *error_message
+)
+{
+    if (
+        send_all(
+            client_fd,
+            error_message,
+            strlen(error_message)
+        ) < 0
+    )
+    {
+        printf(
+            "Failed to send error response: %s",
+            error_message
+        );
+    }
 }
 
 
@@ -236,9 +351,6 @@ int recv_line(
  */
 int ensure_storage_directory()
 {
-    /*
-     * Create parent directory.
-     */
     if (
         mkdir(
             STORAGE_PARENT,
@@ -250,10 +362,6 @@ int ensure_storage_directory()
         return -1;
     }
 
-
-    /*
-     * Create student-specific directory.
-     */
     if (
         mkdir(
             STORAGE_DIR,
@@ -264,7 +372,6 @@ int ensure_storage_directory()
     {
         return -1;
     }
-
 
     return 0;
 }
@@ -278,7 +385,6 @@ int ensure_storage_directory()
 double get_cpu_load()
 {
     FILE *fp;
-
     double load1;
 
     fp = fopen(
@@ -300,7 +406,6 @@ double get_cpu_load()
     )
     {
         fclose(fp);
-
         return -1;
     }
 
@@ -322,7 +427,6 @@ int get_memory_usage()
     char line[256];
 
     long mem_total = 0;
-
     long mem_available = 0;
 
     fp = fopen(
@@ -368,13 +472,21 @@ int get_memory_usage()
 
     fclose(fp);
 
-    if (mem_total == 0)
+    if (
+        mem_total <= 0 ||
+        mem_available < 0
+    )
     {
         return -1;
     }
 
     long mem_used =
         mem_total - mem_available;
+
+    if (mem_used < 0)
+    {
+        mem_used = 0;
+    }
 
     return (int)(
         (mem_used * 100) /
@@ -413,7 +525,6 @@ long get_uptime()
     )
     {
         fclose(fp);
-
         return -1;
     }
 
@@ -435,9 +546,7 @@ void format_uptime(
 )
 {
     long hours;
-
     long minutes;
-
     long secs;
 
     hours =
@@ -475,20 +584,21 @@ void handle_listproc(
 
     char response[BUFFER_SIZE];
 
-    process_pipe = popen(
-        "ps -eo pid,user,comm --sort=pid",
-        "r"
-    );
+    process_pipe =
+        popen(
+            "ps -eo pid,user,comm --sort=pid",
+            "r"
+        );
 
     if (process_pipe == NULL)
     {
-        char error_response[] =
-            "ERR 003 LISTPROC_FAILED\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 003 LISTPROC_FAILED\n"
+        );
+
+        log_event(
+            "LISTPROC failed: popen"
         );
 
         return;
@@ -501,11 +611,17 @@ void handle_listproc(
         SID
     );
 
-    send_all(
-        client_fd,
-        response,
-        strlen(response)
-    );
+    if (
+        send_all(
+            client_fd,
+            response,
+            strlen(response)
+        ) < 0
+    )
+    {
+        pclose(process_pipe);
+        return;
+    }
 
     while (
         fgets(
@@ -515,24 +631,35 @@ void handle_listproc(
         ) != NULL
     )
     {
-        send_all(
-            client_fd,
-            line,
-            strlen(line)
+        if (
+            send_all(
+                client_fd,
+                line,
+                strlen(line)
+            ) < 0
+        )
+        {
+            pclose(process_pipe);
+            return;
+        }
+    }
+
+    int status =
+        pclose(process_pipe);
+
+    if (
+        status == -1
+    )
+    {
+        log_event(
+            "LISTPROC pclose failed"
         );
     }
 
-    pclose(
-        process_pipe
-    );
-
-    char end_response[] =
-        "END PROCS\n";
-
     send_all(
         client_fd,
-        end_response,
-        strlen(end_response)
+        "END PROCS\n",
+        strlen("END PROCS\n")
     );
 
     printf(
@@ -558,7 +685,6 @@ void handle_exec(
     const char *linux_command = NULL;
 
     char response[BUFFER_SIZE];
-
     char output[BUFFER_SIZE];
 
     FILE *command_pipe;
@@ -567,7 +693,6 @@ void handle_exec(
 
     const char *requested_command =
         command + 5;
-
 
     if (
         strcmp(
@@ -616,51 +741,43 @@ void handle_exec(
     }
     else
     {
-        snprintf(
-            response,
-            sizeof(response),
+        send_error(
+            client_fd,
             "ERR 002 COMMAND_NOT_ALLOWED\n"
         );
 
-        send_all(
-            client_fd,
-            response,
-            strlen(response)
+        log_event(
+            "EXEC rejected: command not allowed"
         );
 
         return;
     }
 
-
-    command_pipe = popen(
-        linux_command,
-        "r"
-    );
+    command_pipe =
+        popen(
+            linux_command,
+            "r"
+        );
 
     if (command_pipe == NULL)
     {
-        snprintf(
-            response,
-            sizeof(response),
+        send_error(
+            client_fd,
             "ERR 004 EXEC_FAILED\n"
         );
 
-        send_all(
-            client_fd,
-            response,
-            strlen(response)
+        log_event(
+            "EXEC failed: popen"
         );
 
         return;
     }
-
 
     memset(
         output,
         0,
         sizeof(output)
     );
-
 
     while (
         used < sizeof(output) - 1 &&
@@ -675,11 +792,41 @@ void handle_exec(
             strlen(output);
     }
 
+    int status =
+        pclose(command_pipe);
 
-    pclose(
-        command_pipe
-    );
+    if (
+        status == -1
+    )
+    {
+        send_error(
+            client_fd,
+            "ERR 004 EXEC_FAILED\n"
+        );
 
+        log_event(
+            "EXEC failed: pclose"
+        );
+
+        return;
+    }
+
+    if (
+        WIFEXITED(status) &&
+        WEXITSTATUS(status) != 0
+    )
+    {
+        send_error(
+            client_fd,
+            "ERR 004 EXEC_FAILED\n"
+        );
+
+        log_event(
+            "EXEC failed: command exit status"
+        );
+
+        return;
+    }
 
     while (
         used > 0 &&
@@ -690,14 +837,9 @@ void handle_exec(
     )
     {
         output[used - 1] = '\0';
-
         used--;
     }
 
-
-    /*
-     * Limit output length to avoid truncation warning.
-     */
     snprintf(
         response,
         sizeof(response),
@@ -705,13 +847,16 @@ void handle_exec(
         output
     );
 
-
-    send_all(
-        client_fd,
-        response,
-        strlen(response)
-    );
-
+    if (
+        send_all(
+            client_fd,
+            response,
+            strlen(response)
+        ) < 0
+    )
+    {
+        return;
+    }
 
     printf(
         "EXEC successful: %s -> %s\n",
@@ -752,28 +897,16 @@ int valid_filename(
     }
 
     if (
-        strcmp(
-            filename,
-            "."
-        ) == 0 ||
-        strcmp(
-            filename,
-            ".."
-        ) == 0
+        strcmp(filename, ".") == 0 ||
+        strcmp(filename, "..") == 0
     )
     {
         return 0;
     }
 
     if (
-        strchr(
-            filename,
-            '/'
-        ) != NULL ||
-        strchr(
-            filename,
-            '\\'
-        ) != NULL
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL
     )
     {
         return 0;
@@ -785,7 +918,7 @@ int valid_filename(
 
 /*
  * ============================================================
- * PUT - FILE UPLOAD
+ * PUT
  * ============================================================
  */
 void handle_put(
@@ -794,15 +927,9 @@ void handle_put(
 )
 {
     char filename[256];
-
     char filepath[512];
-
     char response[BUFFER_SIZE];
 
-
-    /*
-     * Extract filename.
-     */
     if (
         sscanf(
             command + 4,
@@ -811,78 +938,72 @@ void handle_put(
         ) != 1
     )
     {
-        char error_response[] =
-            "ERR 006 INVALID_FILENAME\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 006 INVALID_FILENAME\n"
+        );
+
+        log_event(
+            "PUT failed: invalid filename"
         );
 
         return;
     }
 
-
-    /*
-     * Validate filename.
-     */
     if (
         !valid_filename(filename)
     )
     {
-        char error_response[] =
-            "ERR 006 INVALID_FILENAME\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 006 INVALID_FILENAME\n"
+        );
+
+        log_event(
+            "PUT failed: invalid filename"
         );
 
         return;
     }
 
-
-    /*
-     * Make sure storage directory exists.
-     */
     if (
         ensure_storage_directory() < 0
     )
     {
-        char error_response[] =
-            "ERR 007 STORAGE_ERROR\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 007 STORAGE_ERROR\n"
         );
 
-        printf(
-            "PUT: storage directory error.\n"
+        log_event(
+            "PUT failed: storage directory"
         );
 
         return;
     }
 
+    int path_result =
+        snprintf(
+            filepath,
+            sizeof(filepath),
+            "%s/%s",
+            STORAGE_DIR,
+            filename
+        );
 
-    /*
-     * Build destination path.
-     */
-    snprintf(
-        filepath,
-        sizeof(filepath),
-        "%s/%s",
-        STORAGE_DIR,
-        filename
-    );
+    if (
+        path_result < 0 ||
+        (size_t)path_result >= sizeof(filepath)
+    )
+    {
+        send_error(
+            client_fd,
+            "ERR 006 INVALID_FILENAME\n"
+        );
 
+        return;
+    }
 
-    /*
-     * Tell Controller that Agent is ready.
-     */
     snprintf(
         response,
         sizeof(response),
@@ -901,10 +1022,6 @@ void handle_put(
         return;
     }
 
-
-    /*
-     * Receive 8-byte file size.
-     */
     uint64_t network_file_size;
 
     if (
@@ -915,148 +1032,133 @@ void handle_put(
         ) < 0
     )
     {
-        printf(
-            "PUT: failed to receive file size.\n"
+        log_event(
+            "PUT failed: file size receive"
         );
 
         return;
     }
 
-
     uint64_t file_size =
-        ntohll(
-            network_file_size
-        );
+        ntohll(network_file_size);
 
-
-    printf(
-        "PUT: Receiving %s (%llu bytes)\n",
-        filename,
-        (unsigned long long)file_size
-    );
-
-
-    /*
-     * Open destination file.
-     */
     FILE *output_file =
         fopen(
             filepath,
             "wb"
         );
 
-    if (output_file == NULL)
+    if (
+        output_file == NULL
+    )
     {
-        char error_response[] =
-            "ERR 007 STORAGE_ERROR\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 007 STORAGE_ERROR\n"
+        );
+
+        log_event(
+            "PUT failed: fopen"
         );
 
         return;
     }
 
-
-    /*
-     * Receive file bytes.
-     */
     char file_buffer[BUFFER_SIZE];
 
     uint64_t remaining =
         file_size;
 
-
-    while (remaining > 0)
+    while (
+        remaining > 0
+    )
     {
-        size_t chunk_size;
+        size_t chunk_size =
+            remaining > BUFFER_SIZE
+                ? BUFFER_SIZE
+                : (size_t)remaining;
+
+        ssize_t bytes_received;
+
+        do
+        {
+            bytes_received =
+                recv(
+                    client_fd,
+                    file_buffer,
+                    chunk_size,
+                    0
+                );
+        }
+        while (
+            bytes_received < 0 &&
+            errno == EINTR
+        );
 
         if (
-            remaining > BUFFER_SIZE
+            bytes_received <= 0
         )
         {
-            chunk_size =
-                BUFFER_SIZE;
-        }
-        else
-        {
-            chunk_size =
-                (size_t)remaining;
-        }
+            fclose(output_file);
+            remove(filepath);
 
-
-        ssize_t bytes_received =
-            recv(
-                client_fd,
-                file_buffer,
-                chunk_size,
-                0
-            );
-
-
-        if (bytes_received <= 0)
-        {
-            fclose(
-                output_file
-            );
-
-            remove(
-                filepath
-            );
-
-            printf(
-                "PUT: incomplete transfer.\n"
+            log_event(
+                "PUT failed: incomplete transfer"
             );
 
             return;
         }
 
-
         size_t bytes_written =
             fwrite(
                 file_buffer,
                 1,
-                bytes_received,
+                (size_t)bytes_received,
                 output_file
             );
-
 
         if (
             bytes_written !=
             (size_t)bytes_received
         )
         {
-            fclose(
-                output_file
+            fclose(output_file);
+            remove(filepath);
+
+            send_error(
+                client_fd,
+                "ERR 007 STORAGE_ERROR\n"
             );
 
-            remove(
-                filepath
-            );
-
-            printf(
-                "PUT: write error.\n"
+            log_event(
+                "PUT failed: fwrite"
             );
 
             return;
         }
 
-
         remaining -=
             (uint64_t)bytes_received;
     }
 
+    if (
+        fclose(output_file) != 0
+    )
+    {
+        remove(filepath);
 
-    fclose(
-        output_file
-    );
+        send_error(
+            client_fd,
+            "ERR 007 STORAGE_ERROR\n"
+        );
 
+        log_event(
+            "PUT failed: fclose"
+        );
 
-    /*
-     * Final PUT acknowledgement.
-     */
+        return;
+    }
+
     snprintf(
         response,
         sizeof(response),
@@ -1064,13 +1166,11 @@ void handle_put(
         SID
     );
 
-
     send_all(
         client_fd,
         response,
         strlen(response)
     );
-
 
     printf(
         "PUT successful: %s (%llu bytes)\n",
@@ -1095,7 +1195,7 @@ void handle_put(
 
 /*
  * ============================================================
- * GET - FILE DOWNLOAD
+ * GET
  * ============================================================
  */
 void handle_get(
@@ -1104,15 +1204,9 @@ void handle_get(
 )
 {
     char filename[256];
-
     char filepath[512];
-
     char response[BUFFER_SIZE];
 
-
-    /*
-     * Extract filename.
-     */
     if (
         sscanf(
             command + 4,
@@ -1121,70 +1215,65 @@ void handle_get(
         ) != 1
     )
     {
-        char error_response[] =
-            "ERR 008 INVALID_FILENAME\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 008 INVALID_FILENAME\n"
         );
 
         return;
     }
 
-
-    /*
-     * Validate filename.
-     */
     if (
         !valid_filename(filename)
     )
     {
-        char error_response[] =
-            "ERR 008 INVALID_FILENAME\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 008 INVALID_FILENAME\n"
+        );
+
+        log_event(
+            "GET failed: invalid filename"
         );
 
         return;
     }
 
+    int path_result =
+        snprintf(
+            filepath,
+            sizeof(filepath),
+            "%s/%s",
+            STORAGE_DIR,
+            filename
+        );
 
-    /*
-     * Build source path.
-     */
-    snprintf(
-        filepath,
-        sizeof(filepath),
-        "%s/%s",
-        STORAGE_DIR,
-        filename
-    );
+    if (
+        path_result < 0 ||
+        (size_t)path_result >= sizeof(filepath)
+    )
+    {
+        send_error(
+            client_fd,
+            "ERR 008 INVALID_FILENAME\n"
+        );
 
+        return;
+    }
 
-    /*
-     * Open file.
-     */
     FILE *input_file =
         fopen(
             filepath,
             "rb"
         );
 
-
-    if (input_file == NULL)
+    if (
+        input_file == NULL
+    )
     {
-        char error_response[] =
-            "ERR 009 FILE_NOT_FOUND\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 009 FILE_NOT_FOUND\n"
         );
 
         printf(
@@ -1195,10 +1284,6 @@ void handle_get(
         return;
     }
 
-
-    /*
-     * Get file size.
-     */
     if (
         fseek(
             input_file,
@@ -1207,66 +1292,38 @@ void handle_get(
         ) != 0
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
-        char error_response[] =
-            "ERR 010 FILE_ERROR\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 010 FILE_ERROR\n"
         );
 
         return;
     }
 
-
     long file_size_long =
-        ftell(
-            input_file
-        );
-
+        ftell(input_file);
 
     if (
         file_size_long < 0
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
-        char error_response[] =
-            "ERR 010 FILE_ERROR\n";
-
-        send_all(
+        send_error(
             client_fd,
-            error_response,
-            strlen(error_response)
+            "ERR 010 FILE_ERROR\n"
         );
 
         return;
     }
 
-
-    rewind(
-        input_file
-    );
-
+    rewind(input_file);
 
     uint64_t file_size =
         (uint64_t)file_size_long;
 
-
-    /*
-     * Send header.
-     *
-     * Example:
-     *
-     * OK FILE_READY SID:8652 SIZE:30
-     */
     snprintf(
         response,
         sizeof(response),
@@ -1274,7 +1331,6 @@ void handle_get(
         SID,
         (unsigned long long)file_size
     );
-
 
     if (
         send_all(
@@ -1284,42 +1340,23 @@ void handle_get(
         ) < 0
     )
     {
-        fclose(
-            input_file
-        );
-
+        fclose(input_file);
         return;
     }
 
-
-    /*
-     * Send exact file bytes.
-     */
     char file_buffer[BUFFER_SIZE];
 
     uint64_t remaining =
         file_size;
 
-
     while (
         remaining > 0
     )
     {
-        size_t chunk_size;
-
-        if (
+        size_t chunk_size =
             remaining > BUFFER_SIZE
-        )
-        {
-            chunk_size =
-                BUFFER_SIZE;
-        }
-        else
-        {
-            chunk_size =
-                (size_t)remaining;
-        }
-
+                ? BUFFER_SIZE
+                : (size_t)remaining;
 
         size_t bytes_read =
             fread(
@@ -1329,22 +1366,28 @@ void handle_get(
                 input_file
             );
 
-
         if (
             bytes_read == 0
         )
         {
-            fclose(
-                input_file
-            );
+            if (ferror(input_file))
+            {
+                fclose(input_file);
 
-            printf(
-                "GET: file read error.\n"
-            );
+                send_error(
+                    client_fd,
+                    "ERR 010 FILE_ERROR\n"
+                );
 
-            return;
+                log_event(
+                    "GET failed: fread"
+                );
+
+                return;
+            }
+
+            break;
         }
-
 
         if (
             send_all(
@@ -1354,36 +1397,28 @@ void handle_get(
             ) < 0
         )
         {
-            fclose(
-                input_file
-            );
-
-            printf(
-                "GET: transfer failed.\n"
-            );
-
+            fclose(input_file);
             return;
         }
-
 
         remaining -=
             (uint64_t)bytes_read;
     }
 
+    fclose(input_file);
 
-    fclose(
-        input_file
-    );
+    if (
+        remaining != 0
+    )
+    {
+        send_error(
+            client_fd,
+            "ERR 010 FILE_ERROR\n"
+        );
 
+        return;
+    }
 
-    /*
-     * IMPORTANT:
-     *
-     * Send final ACK after all file bytes.
-     *
-     * Controller waits for this after receiving
-     * exactly SIZE bytes.
-     */
     snprintf(
         response,
         sizeof(response),
@@ -1391,13 +1426,11 @@ void handle_get(
         SID
     );
 
-
     send_all(
         client_fd,
         response,
         strlen(response)
     );
-
 
     printf(
         "GET successful: %s (%llu bytes)\n",
@@ -1420,19 +1453,34 @@ void handle_get(
 }
 
 
+/*
+ * ============================================================
+ * UDP MONITOR WORKER
+ * ============================================================
+ */
 void *monitor_worker(void *arg)
 {
     (void)arg;
 
-    int udp_fd = socket(
-        AF_INET,
-        SOCK_DGRAM,
-        0
-    );
+    int udp_fd =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            0
+        );
 
-    if (udp_fd < 0)
+    if (
+        udp_fd < 0
+    )
     {
+        perror("monitor socket");
+
+        log_event(
+            "MONITOR failed: UDP socket"
+        );
+
         monitor_running = 0;
+
         return NULL;
     }
 
@@ -1444,8 +1492,11 @@ void *monitor_worker(void *arg)
         sizeof(controller_addr)
     );
 
-    controller_addr.sin_family = AF_INET;
-    controller_addr.sin_port = htons(UDP_PORT);
+    controller_addr.sin_family =
+        AF_INET;
+
+    controller_addr.sin_port =
+        htons(UDP_PORT);
 
     if (
         inet_pton(
@@ -1455,17 +1506,32 @@ void *monitor_worker(void *arg)
         ) <= 0
     )
     {
+        log_event(
+            "MONITOR failed: invalid controller IP"
+        );
+
         close(udp_fd);
+
         monitor_running = 0;
+
         return NULL;
     }
 
-    while (!monitor_stop_requested)
+    while (
+        !monitor_stop_requested
+    )
     {
-        double cpu = get_cpu_load();
-        int memory = get_memory_usage();
-        long uptime_seconds = get_uptime();
+        double cpu =
+            get_cpu_load();
+
+        int memory =
+            get_memory_usage();
+
+        long uptime_seconds =
+            get_uptime();
+
         char uptime_text[32];
+
         char monitor_message[BUFFER_SIZE];
 
         if (
@@ -1490,30 +1556,69 @@ void *monitor_worker(void *arg)
                 SID
             );
 
-            sendto(
-                udp_fd,
-                monitor_message,
-                strlen(monitor_message),
-                0,
-                (struct sockaddr *)&controller_addr,
-                sizeof(controller_addr)
+            ssize_t sent =
+                sendto(
+                    udp_fd,
+                    monitor_message,
+                    strlen(monitor_message),
+                    0,
+                    (struct sockaddr *)&controller_addr,
+                    sizeof(controller_addr)
+                );
+
+            if (
+                sent < 0 &&
+                errno != EINTR
+            )
+            {
+                log_event(
+                    "MONITOR UDP send failed"
+                );
+            }
+        }
+        else
+        {
+            log_event(
+                "MONITOR metric collection failed"
             );
         }
 
-        for (int i = 0; i < 2 && !monitor_stop_requested; i++)
+        for (
+            int i = 0;
+            i < 2 &&
+            !monitor_stop_requested;
+            i++
+        )
         {
             sleep(1);
         }
     }
 
     close(udp_fd);
+
     monitor_running = 0;
 
     return NULL;
 }
 
-int start_monitor(const char *controller_ip)
+
+/*
+ * ============================================================
+ * START MONITOR
+ * ============================================================
+ */
+int start_monitor(
+    const char *controller_ip
+)
 {
+    if (
+        controller_ip == NULL ||
+        strlen(controller_ip) == 0
+    )
+    {
+        return -1;
+    }
+
     if (monitor_running)
     {
         return 1;
@@ -1527,6 +1632,7 @@ int start_monitor(const char *controller_ip)
     );
 
     monitor_stop_requested = 0;
+
     monitor_running = 1;
 
     if (
@@ -1539,12 +1645,23 @@ int start_monitor(const char *controller_ip)
     )
     {
         monitor_running = 0;
+
+        log_event(
+            "MONITOR failed: pthread_create"
+        );
+
         return -1;
     }
 
     return 0;
 }
 
+
+/*
+ * ============================================================
+ * STOP MONITOR
+ * ============================================================
+ */
 void stop_monitor()
 {
     if (!monitor_running)
@@ -1558,6 +1675,8 @@ void stop_monitor()
         monitor_thread,
         NULL
     );
+
+    monitor_running = 0;
 }
 
 
@@ -1579,11 +1698,9 @@ void *handle_client(
 
     int authenticated = 0;
 
-
     printf(
         "Client thread started.\n"
     );
-
 
     while (1)
     {
@@ -1593,16 +1710,31 @@ void *handle_client(
             sizeof(buffer)
         );
 
-
-        /*
-         * Receive command line.
-         */
-        if (
+        int line_result =
             recv_line(
                 client_fd,
                 buffer,
                 sizeof(buffer)
-            ) < 0
+            );
+
+        if (
+            line_result == ERR_LINE_TOO_LONG
+        )
+        {
+            send_error(
+                client_fd,
+                "ERR 013 COMMAND_TOO_LONG\n"
+            );
+
+            log_event(
+                "Command rejected: too long"
+            );
+
+            continue;
+        }
+
+        if (
+            line_result < 0
         )
         {
             printf(
@@ -1616,6 +1748,17 @@ void *handle_client(
             break;
         }
 
+        if (
+            strlen(buffer) == 0
+        )
+        {
+            send_error(
+                client_fd,
+                "ERR 005 UNKNOWN_COMMAND\n"
+            );
+
+            continue;
+        }
 
         printf(
             "Received: %s\n",
@@ -1644,13 +1787,23 @@ void *handle_client(
                 sizeof(received_token)
             );
 
+            if (
+                sscanf(
+                    buffer + 5,
+                    "%99s",
+                    received_token
+                ) != 1
+            )
+            {
+                authenticated = 0;
 
-            sscanf(
-                buffer + 5,
-                "%99s",
-                received_token
-            );
+                send_error(
+                    client_fd,
+                    "ERR 001 AUTH_FAILED SID:8652\n"
+                );
 
+                continue;
+            }
 
             if (
                 strcmp(
@@ -1676,11 +1829,6 @@ void *handle_client(
                     strlen(response)
                 );
 
-                printf(
-                    "AUTH successful. SID:%s\n",
-                    SID
-                );
-
                 log_event(
                     "AUTH successful"
                 );
@@ -1702,10 +1850,6 @@ void *handle_client(
                     client_fd,
                     response,
                     strlen(response)
-                );
-
-                printf(
-                    "AUTH failed.\n"
                 );
 
                 log_event(
@@ -1761,19 +1905,20 @@ void *handle_client(
          */
         if (!authenticated)
         {
-            char response[] =
-                "ERR 001 AUTH_REQUIRED\n";
-
-            send_all(
+            send_error(
                 client_fd,
-                response,
-                strlen(response)
+                "ERR 001 AUTH_REQUIRED\n"
             );
 
             continue;
         }
 
 
+        /*
+         * ====================================================
+         * MONITOR START
+         * ====================================================
+         */
         if (
             strcmp(
                 buffer,
@@ -1781,9 +1926,10 @@ void *handle_client(
             ) == 0
         )
         {
-            int result = start_monitor(
-                connected_controller_ip
-            );
+            int result =
+                start_monitor(
+                    connected_controller_ip
+                );
 
             char response[BUFFER_SIZE];
 
@@ -1829,6 +1975,11 @@ void *handle_client(
         }
 
 
+        /*
+         * ====================================================
+         * MONITOR STOP
+         * ====================================================
+         */
         if (
             strcmp(
                 buffer,
@@ -1886,32 +2037,29 @@ void *handle_client(
 
             char response[BUFFER_SIZE];
 
-
             if (
                 cpu < 0 ||
                 memory < 0 ||
                 uptime_seconds < 0
             )
             {
-                char error_response[] =
-                    "ERR SYSINFO_FAILED\n";
-
-                send_all(
+                send_error(
                     client_fd,
-                    error_response,
-                    strlen(error_response)
+                    "ERR 014 SYSINFO_FAILED\n"
+                );
+
+                log_event(
+                    "SYSINFO failed"
                 );
 
                 continue;
             }
-
 
             format_uptime(
                 uptime_seconds,
                 uptime_text,
                 sizeof(uptime_text)
             );
-
 
             snprintf(
                 response,
@@ -1925,7 +2073,6 @@ void *handle_client(
                 uptime_text,
                 SID
             );
-
 
             send_all(
                 client_fd,
@@ -1978,13 +2125,9 @@ void *handle_client(
                 strlen(buffer) <= 5
             )
             {
-                char response[] =
-                    "ERR 002 COMMAND_NOT_ALLOWED\n";
-
-                send_all(
+                send_error(
                     client_fd,
-                    response,
-                    strlen(response)
+                    "ERR 002 COMMAND_NOT_ALLOWED\n"
                 );
 
                 continue;
@@ -2048,26 +2191,21 @@ void *handle_client(
          * UNKNOWN COMMAND
          * ====================================================
          */
-        char response[] =
-            "ERR 005 UNKNOWN_COMMAND\n";
-
-        send_all(
+        send_error(
             client_fd,
-            response,
-            strlen(response)
+            "ERR 005 UNKNOWN_COMMAND\n"
+        );
+
+        log_event(
+            "Unknown command received"
         );
     }
 
-
-    close(
-        client_fd
-    );
-
+    close(client_fd);
 
     printf(
         "Client thread finished.\n"
     );
-
 
     return NULL;
 }
@@ -2080,21 +2218,25 @@ void *handle_client(
  */
 int main()
 {
+    /*
+     * Prevent process termination when sending to a
+     * disconnected TCP client.
+     */
+    signal(
+        SIGPIPE,
+        SIG_IGN
+    );
+
     int server_fd;
 
     struct sockaddr_in server_addr;
 
-
-    /*
-     * Create socket.
-     */
     server_fd =
         socket(
             AF_INET,
             SOCK_STREAM,
             0
         );
-
 
     if (
         server_fd < 0
@@ -2105,50 +2247,48 @@ int main()
         return 1;
     }
 
-
     printf(
         "Socket created successfully.\n"
     );
 
-
-    /*
-     * Allow port reuse.
-     */
     int opt = 1;
 
-    setsockopt(
-        server_fd,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &opt,
-        sizeof(opt)
-    );
+    if (
+        setsockopt(
+            server_fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &opt,
+            sizeof(opt)
+        ) < 0
+    )
+    {
+        perror(
+            "setsockopt"
+        );
 
+        close(server_fd);
 
-    /*
-     * Create storage directory at startup.
-     */
+        return 1;
+    }
+
     if (
         ensure_storage_directory() < 0
     )
     {
         fprintf(
             stderr,
-            "Warning: Could not create %s\n",
-            STORAGE_DIR
+            "Warning: Could not create %s: %s\n",
+            STORAGE_DIR,
+            strerror(errno)
         );
     }
 
-
-    /*
-     * Server address.
-     */
     memset(
         &server_addr,
         0,
         sizeof(server_addr)
     );
-
 
     server_addr.sin_family =
         AF_INET;
@@ -2159,10 +2299,6 @@ int main()
     server_addr.sin_port =
         htons(PORT);
 
-
-    /*
-     * Bind.
-     */
     if (
         bind(
             server_fd,
@@ -2178,16 +2314,11 @@ int main()
         return 1;
     }
 
-
     printf(
         "Server bound to port %d.\n",
         PORT
     );
 
-
-    /*
-     * Listen.
-     */
     if (
         listen(
             server_fd,
@@ -2202,86 +2333,33 @@ int main()
         return 1;
     }
 
-
-    /*
-     * Startup banner.
-     */
     printf("\n");
-
-    printf(
-        "=================================\n"
-    );
-
-    printf(
-        "      RemoteOps Agent Started\n"
-    );
-
-    printf(
-        "=================================\n"
-    );
-
-    printf(
-        "Listening on port : %d\n",
-        PORT
-    );
-
-    printf(
-        "SID                : %s\n",
-        SID
-    );
-
-    printf(
-        "Authentication     : Enabled\n"
-    );
-
-    printf(
-        "SYSINFO            : Enabled\n"
-    );
-
-    printf(
-        "LISTPROC           : Enabled\n"
-    );
-
-    printf(
-        "EXEC               : Enabled\n"
-    );
-
-    printf(
-        "PUT                : Enabled\n"
-    );
-
-    printf(
-        "GET                : Enabled\n"
-    );
-
-    printf(
-        "UDP Monitoring     : Enabled\n"
-    );
-
-    printf(
-        "Storage            : %s\n",
-        STORAGE_DIR
-    );
-
-    printf(
-        "=================================\n\n"
-    );
+    printf("=================================\n");
+    printf("      RemoteOps Agent Started\n");
+    printf("=================================\n");
+    printf("Listening on port : %d\n", PORT);
+    printf("SID                : %s\n", SID);
+    printf("Authentication     : Enabled\n");
+    printf("SYSINFO            : Enabled\n");
+    printf("LISTPROC           : Enabled\n");
+    printf("EXEC               : Enabled\n");
+    printf("PUT                : Enabled\n");
+    printf("GET                : Enabled\n");
+    printf("UDP Monitoring     : Enabled\n");
+    printf("Error Handling     : Enabled\n");
+    printf("Storage            : %s\n", STORAGE_DIR);
+    printf("=================================\n\n");
 
     log_event(
         "Agent started"
     );
 
-
-    /*
-     * Accept Controllers.
-     */
     while (1)
     {
         struct sockaddr_in client_addr;
 
         socklen_t client_len =
             sizeof(client_addr);
-
 
         int client_fd =
             accept(
@@ -2290,35 +2368,52 @@ int main()
                 &client_len
             );
 
-
         if (
             client_fd < 0
         )
         {
-            perror("accept");
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            perror(
+                "accept"
+            );
+
+            log_event(
+                "accept failed"
+            );
 
             continue;
         }
-
 
         printf(
             "New Controller connected.\n"
         );
 
-        inet_ntop(
-            AF_INET,
-            &client_addr.sin_addr,
-            connected_controller_ip,
-            sizeof(connected_controller_ip)
-        );
-
-
-
-        int *client_socket =
-            malloc(
-                sizeof(int)
+        if (
+            inet_ntop(
+                AF_INET,
+                &client_addr.sin_addr,
+                connected_controller_ip,
+                sizeof(connected_controller_ip)
+            ) == NULL
+        )
+        {
+            strncpy(
+                connected_controller_ip,
+                "127.0.0.1",
+                sizeof(connected_controller_ip)
             );
 
+            connected_controller_ip[
+                sizeof(connected_controller_ip) - 1
+            ] = '\0';
+        }
+
+        int *client_socket =
+            malloc(sizeof(int));
 
         if (
             client_socket == NULL
@@ -2326,48 +2421,61 @@ int main()
         {
             perror("malloc");
 
+            send_error(
+                client_fd,
+                "ERR 015 SERVER_RESOURCE_ERROR\n"
+            );
+
             close(client_fd);
 
             continue;
         }
 
-
         *client_socket =
             client_fd;
 
-
         pthread_t thread;
 
-
-        if (
+        int thread_result =
             pthread_create(
                 &thread,
                 NULL,
                 handle_client,
                 client_socket
-            ) != 0
+            );
+
+        if (
+            thread_result != 0
         )
         {
-            perror("pthread_create");
+            fprintf(
+                stderr,
+                "pthread_create failed: %s\n",
+                strerror(thread_result)
+            );
+
+            free(client_socket);
 
             close(client_fd);
 
-            free(client_socket);
+            log_event(
+                "Client thread creation failed"
+            );
 
             continue;
         }
 
-
-        pthread_detach(
-            thread
-        );
+        if (
+            pthread_detach(thread) != 0
+        )
+        {
+            log_event(
+                "pthread_detach failed"
+            );
+        }
     }
 
-
-    close(
-        server_fd
-    );
-
+    close(server_fd);
 
     return 0;
 }

@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <signal.h>
+#include <sys/select.h>
 
 #define PORT 9410
 #define BUFFER_SIZE 1024
@@ -16,63 +18,126 @@
 
 #define UDP_PORT 9410
 
+#define ERR_LINE_TOO_LONG -2
+
 int udp_socket_fd = -1;
+
 volatile int udp_receiver_running = 1;
 
-void *udp_receiver(void *arg)
+pthread_t udp_thread;
+
+
+/*
+ * ============================================================
+ * UDP RECEIVER
+ * ============================================================
+ */
+void *udp_receiver(
+    void *arg
+)
 {
     (void)arg;
 
     char buffer[BUFFER_SIZE];
+
     struct sockaddr_in agent_addr;
+
     socklen_t agent_len;
 
-    while (udp_receiver_running)
+    while (
+        udp_receiver_running
+    )
     {
         fd_set read_fds;
+
         struct timeval timeout;
 
         FD_ZERO(&read_fds);
-        FD_SET(udp_socket_fd, &read_fds);
+
+        if (udp_socket_fd < 0)
+        {
+            break;
+        }
+
+        FD_SET(
+            udp_socket_fd,
+            &read_fds
+        );
 
         timeout.tv_sec = 0;
         timeout.tv_usec = 500000;
 
-        int result = select(
-            udp_socket_fd + 1,
-            &read_fds,
-            NULL,
-            NULL,
-            &timeout
-        );
+        int result =
+            select(
+                udp_socket_fd + 1,
+                &read_fds,
+                NULL,
+                NULL,
+                &timeout
+            );
 
         if (!udp_receiver_running)
         {
             break;
         }
 
-        if (result <= 0)
+        if (result < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+
+            perror(
+                "UDP select"
+            );
+
+            break;
+        }
+
+        if (result == 0)
         {
             continue;
         }
 
-        agent_len = sizeof(agent_addr);
+        agent_len =
+            sizeof(agent_addr);
 
-        ssize_t bytes_received = recvfrom(
-            udp_socket_fd,
-            buffer,
-            sizeof(buffer) - 1,
-            0,
-            (struct sockaddr *)&agent_addr,
-            &agent_len
-        );
+        ssize_t bytes_received =
+            recvfrom(
+                udp_socket_fd,
+                buffer,
+                sizeof(buffer) - 1,
+                0,
+                (struct sockaddr *)&agent_addr,
+                &agent_len
+            );
 
         if (bytes_received < 0)
         {
+            if (
+                errno == EINTR
+            )
+            {
+                continue;
+            }
+
+            if (
+                !udp_receiver_running
+            )
+            {
+                break;
+            }
+
+            perror(
+                "UDP recvfrom"
+            );
+
             continue;
         }
 
-        buffer[bytes_received] = '\0';
+        buffer[bytes_received] =
+            '\0';
 
         printf(
             "\nUDP Monitor [%s:%d] -> %s\n",
@@ -81,37 +146,66 @@ void *udp_receiver(void *arg)
             buffer
         );
 
-        printf("\nRemoteOps> ");
+        printf(
+            "\nRemoteOps> "
+        );
+
         fflush(stdout);
     }
 
     return NULL;
 }
 
+
+/*
+ * ============================================================
+ * START UDP RECEIVER
+ * ============================================================
+ */
 int start_udp_receiver()
 {
     struct sockaddr_in udp_addr;
+
     int opt = 1;
 
-    udp_socket_fd = socket(
-        AF_INET,
-        SOCK_DGRAM,
-        0
-    );
+    udp_socket_fd =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            0
+        );
 
-    if (udp_socket_fd < 0)
+    if (
+        udp_socket_fd < 0
+    )
     {
-        perror("UDP socket");
+        perror(
+            "UDP socket"
+        );
+
         return -1;
     }
 
-    setsockopt(
-        udp_socket_fd,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &opt,
-        sizeof(opt)
-    );
+    if (
+        setsockopt(
+            udp_socket_fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &opt,
+            sizeof(opt)
+        ) < 0
+    )
+    {
+        perror(
+            "UDP setsockopt"
+        );
+
+        close(udp_socket_fd);
+
+        udp_socket_fd = -1;
+
+        return -1;
+    }
 
     memset(
         &udp_addr,
@@ -119,39 +213,60 @@ int start_udp_receiver()
         sizeof(udp_addr)
     );
 
-    udp_addr.sin_family = AF_INET;
-    udp_addr.sin_addr.s_addr = INADDR_ANY;
-    udp_addr.sin_port = htons(UDP_PORT);
+    udp_addr.sin_family =
+        AF_INET;
 
-    if (bind(
-        udp_socket_fd,
-        (struct sockaddr *)&udp_addr,
-        sizeof(udp_addr)
-    ) < 0)
+    udp_addr.sin_addr.s_addr =
+        INADDR_ANY;
+
+    udp_addr.sin_port =
+        htons(UDP_PORT);
+
+    if (
+        bind(
+            udp_socket_fd,
+            (struct sockaddr *)&udp_addr,
+            sizeof(udp_addr)
+        ) < 0
+    )
     {
-        perror("UDP bind");
+        perror(
+            "UDP bind"
+        );
+
         close(udp_socket_fd);
+
         udp_socket_fd = -1;
+
         return -1;
     }
 
-    pthread_t thread;
     udp_receiver_running = 1;
 
-    if (pthread_create(
-        &thread,
-        NULL,
-        udp_receiver,
-        NULL
-    ) != 0)
+    int thread_result =
+        pthread_create(
+            &udp_thread,
+            NULL,
+            udp_receiver,
+            NULL
+        );
+
+    if (
+        thread_result != 0
+    )
     {
-        perror("pthread_create");
+        fprintf(
+            stderr,
+            "UDP pthread_create failed: %s\n",
+            strerror(thread_result)
+        );
+
         close(udp_socket_fd);
+
         udp_socket_fd = -1;
+
         return -1;
     }
-
-    pthread_detach(thread);
 
     printf(
         "UDP monitor receiver listening on port %d.\n",
@@ -161,15 +276,46 @@ int start_udp_receiver()
     return 0;
 }
 
+
+/*
+ * ============================================================
+ * STOP UDP RECEIVER
+ * ============================================================
+ */
 void stop_udp_receiver()
 {
+    if (
+        !udp_receiver_running
+    )
+    {
+        return;
+    }
+
     udp_receiver_running = 0;
 
-    if (udp_socket_fd >= 0)
+    if (
+        udp_socket_fd >= 0
+    )
     {
-        close(udp_socket_fd);
+        /*
+         * shutdown wakes select/recvfrom safely.
+         */
+        shutdown(
+            udp_socket_fd,
+            SHUT_RDWR
+        );
+
+        close(
+            udp_socket_fd
+        );
+
         udp_socket_fd = -1;
     }
+
+    pthread_join(
+        udp_thread,
+        NULL
+    );
 }
 
 
@@ -189,7 +335,6 @@ int send_all(
     const char *buffer =
         (const char *)data;
 
-
     while (
         total_sent < total_bytes
     )
@@ -202,19 +347,30 @@ int send_all(
                 0
             );
 
+        if (
+            bytes_sent < 0
+        )
+        {
+            if (
+                errno == EINTR
+            )
+            {
+                continue;
+            }
+
+            return -1;
+        }
 
         if (
-            bytes_sent <= 0
+            bytes_sent == 0
         )
         {
             return -1;
         }
 
-
         total_sent +=
             (size_t)bytes_sent;
     }
-
 
     return 0;
 }
@@ -236,7 +392,6 @@ int recv_all(
     char *buffer =
         (char *)data;
 
-
     while (
         total_received < total_bytes
     )
@@ -249,19 +404,30 @@ int recv_all(
                 0
             );
 
+        if (
+            bytes_received < 0
+        )
+        {
+            if (
+                errno == EINTR
+            )
+            {
+                continue;
+            }
+
+            return -1;
+        }
 
         if (
-            bytes_received <= 0
+            bytes_received == 0
         )
         {
             return -1;
         }
 
-
         total_received +=
             (size_t)bytes_received;
     }
-
 
     return 0;
 }
@@ -322,14 +488,6 @@ uint64_t ntohll(
  * ============================================================
  * RECEIVE LINE
  * ============================================================
- *
- * Receives one complete text line.
- *
- * Example:
- *
- * OK AUTHENTICATED SID:8652
- *
- * The '\n' is consumed but not included in the final string.
  */
 int recv_line(
     int socket_fd,
@@ -339,6 +497,7 @@ int recv_line(
 {
     size_t index = 0;
 
+    int too_long = 0;
 
     if (
         buffer == NULL ||
@@ -348,13 +507,9 @@ int recv_line(
         return -1;
     }
 
-
-    while (
-        index < buffer_size - 1
-    )
+    while (1)
     {
         char character;
-
 
         ssize_t result =
             recv(
@@ -364,18 +519,27 @@ int recv_line(
                 0
             );
 
+        if (
+            result < 0
+        )
+        {
+            if (
+                errno == EINTR
+            )
+            {
+                continue;
+            }
+
+            return -1;
+        }
 
         if (
-            result <= 0
+            result == 0
         )
         {
             return -1;
         }
 
-
-        /*
-         * Stop at newline.
-         */
         if (
             character == '\n'
         )
@@ -383,10 +547,6 @@ int recv_line(
             break;
         }
 
-
-        /*
-         * Ignore carriage return.
-         */
         if (
             character == '\r'
         )
@@ -394,15 +554,26 @@ int recv_line(
             continue;
         }
 
-
-        buffer[index++] =
-            character;
+        if (
+            index < buffer_size - 1
+        )
+        {
+            buffer[index++] =
+                character;
+        }
+        else
+        {
+            too_long = 1;
+        }
     }
-
 
     buffer[index] =
         '\0';
 
+    if (too_long)
+    {
+        return ERR_LINE_TOO_LONG;
+    }
 
     return (int)index;
 }
@@ -425,39 +596,21 @@ int valid_filename(
         return 0;
     }
 
-
-    /*
-     * Prevent path traversal.
-     */
     if (
-        strchr(
-            filename,
-            '/'
-        ) != NULL ||
-        strchr(
-            filename,
-            '\\'
-        ) != NULL
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL
     )
     {
         return 0;
     }
 
-
     if (
-        strcmp(
-            filename,
-            "."
-        ) == 0 ||
-        strcmp(
-            filename,
-            ".."
-        ) == 0
+        strcmp(filename, ".") == 0 ||
+        strcmp(filename, "..") == 0
     )
     {
         return 0;
     }
-
 
     return 1;
 }
@@ -477,7 +630,6 @@ int extract_filename(
 {
     const char *argument;
 
-
     if (
         command == NULL ||
         prefix == NULL ||
@@ -487,14 +639,9 @@ int extract_filename(
         return 0;
     }
 
-
     argument =
         command + strlen(prefix);
 
-
-    /*
-     * Extract first word after PUT / GET.
-     */
     if (
         sscanf(
             argument,
@@ -506,7 +653,6 @@ int extract_filename(
         return 0;
     }
 
-
     if (
         strlen(filename) == 0 ||
         strlen(filename) >= filename_size
@@ -515,7 +661,6 @@ int extract_filename(
         return 0;
     }
 
-
     if (
         !valid_filename(filename)
     )
@@ -523,14 +668,13 @@ int extract_filename(
         return 0;
     }
 
-
     return 1;
 }
 
 
 /*
  * ============================================================
- * PUT - FILE UPLOAD
+ * PUT
  * ============================================================
  */
 int handle_put(
@@ -542,10 +686,6 @@ int handle_put(
 
     char response[BUFFER_SIZE];
 
-
-    /*
-     * Extract filename.
-     */
     if (
         !extract_filename(
             command,
@@ -556,39 +696,30 @@ int handle_put(
     )
     {
         printf(
-            "Usage: PUT <filename>\n"
+            "PUT error: invalid filename.\n"
         );
 
         return 0;
     }
 
-
-    /*
-     * Open local file.
-     */
     FILE *input_file =
         fopen(
             filename,
             "rb"
         );
 
-
     if (
         input_file == NULL
     )
     {
         printf(
-            "File not found: %s\n",
+            "PUT error: file not found: %s\n",
             filename
         );
 
         return 0;
     }
 
-
-    /*
-     * Find file size.
-     */
     if (
         fseek(
             input_file,
@@ -597,54 +728,37 @@ int handle_put(
         ) != 0
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
         printf(
-            "Unable to determine file size.\n"
+            "PUT error: unable to determine file size.\n"
         );
 
         return 0;
     }
 
-
     long file_size_long =
-        ftell(
-            input_file
-        );
-
+        ftell(input_file);
 
     if (
         file_size_long < 0
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
         printf(
-            "Unable to determine file size.\n"
+            "PUT error: ftell failed.\n"
         );
 
         return 0;
     }
 
-
-    rewind(
-        input_file
-    );
-
+    rewind(input_file);
 
     uint64_t file_size =
         (uint64_t)file_size_long;
 
-
-    /*
-     * Send PUT command.
-     */
     char command_buffer[BUFFER_SIZE];
-
 
     int command_length =
         snprintf(
@@ -654,23 +768,20 @@ int handle_put(
             filename
         );
 
-
     if (
         command_length < 0 ||
-        (size_t)command_length >= sizeof(command_buffer)
+        (size_t)command_length >=
+            sizeof(command_buffer)
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
         printf(
-            "PUT command is too long.\n"
+            "PUT error: command too long.\n"
         );
 
         return 0;
     }
-
 
     if (
         send_all(
@@ -680,46 +791,53 @@ int handle_put(
         ) < 0
     )
     {
-        fclose(
-            input_file
+        fclose(input_file);
+
+        perror(
+            "PUT send"
         );
 
         return -1;
     }
 
-
-    /*
-     * Wait for Agent READY.
-     */
-    if (
+    int line_result =
         recv_line(
             client_fd,
             response,
             sizeof(response)
-        ) < 0
-    )
-    {
-        fclose(
-            input_file
         );
 
+    if (
+        line_result == ERR_LINE_TOO_LONG
+    )
+    {
+        fclose(input_file);
+
         printf(
-            "Agent disconnected.\n"
+            "PUT error: Agent response too long.\n"
         );
 
         return -1;
     }
 
+    if (
+        line_result < 0
+    )
+    {
+        fclose(input_file);
+
+        printf(
+            "PUT error: Agent disconnected.\n"
+        );
+
+        return -1;
+    }
 
     printf(
         "Agent: %s\n",
         response
     );
 
-
-    /*
-     * Check READY response.
-     */
     if (
         strncmp(
             response,
@@ -728,9 +846,7 @@ int handle_put(
         ) != 0
     )
     {
-        fclose(
-            input_file
-        );
+        fclose(input_file);
 
         printf(
             "PUT rejected by Agent.\n"
@@ -739,15 +855,8 @@ int handle_put(
         return 0;
     }
 
-
-    /*
-     * Send 8-byte file size.
-     */
     uint64_t network_file_size =
-        htonll(
-            file_size
-        );
-
+        htonll(file_size);
 
     if (
         send_all(
@@ -757,43 +866,28 @@ int handle_put(
         ) < 0
     )
     {
-        fclose(
-            input_file
+        fclose(input_file);
+
+        perror(
+            "PUT file size send"
         );
 
         return -1;
     }
 
-
-    /*
-     * Send exact file bytes.
-     */
     char file_buffer[BUFFER_SIZE];
 
     uint64_t remaining =
         file_size;
 
-
     while (
         remaining > 0
     )
     {
-        size_t chunk_size;
-
-
-        if (
+        size_t chunk_size =
             remaining > BUFFER_SIZE
-        )
-        {
-            chunk_size =
-                BUFFER_SIZE;
-        }
-        else
-        {
-            chunk_size =
-                (size_t)remaining;
-        }
-
+                ? BUFFER_SIZE
+                : (size_t)remaining;
 
         size_t bytes_read =
             fread(
@@ -803,22 +897,18 @@ int handle_put(
                 input_file
             );
 
-
         if (
             bytes_read == 0
         )
         {
-            fclose(
-                input_file
-            );
+            fclose(input_file);
 
             printf(
-                "Error reading local file.\n"
+                "PUT error: local file read failed.\n"
             );
 
             return -1;
         }
-
 
         if (
             send_all(
@@ -828,48 +918,43 @@ int handle_put(
             ) < 0
         )
         {
-            fclose(
-                input_file
+            fclose(input_file);
+
+            perror(
+                "PUT file send"
             );
 
             return -1;
         }
 
-
         remaining -=
             (uint64_t)bytes_read;
     }
 
+    fclose(input_file);
 
-    fclose(
-        input_file
-    );
-
-
-    /*
-     * Receive final Agent response.
-     */
-    if (
+    line_result =
         recv_line(
             client_fd,
             response,
             sizeof(response)
-        ) < 0
+        );
+
+    if (
+        line_result < 0
     )
     {
         printf(
-            "Agent disconnected.\n"
+            "PUT error: final Agent response missing.\n"
         );
 
         return -1;
     }
 
-
     printf(
         "Agent: %s\n",
         response
     );
-
 
     if (
         strcmp(
@@ -889,32 +974,14 @@ int handle_put(
         );
     }
 
-
     return 0;
 }
 
 
 /*
  * ============================================================
- * GET - FILE DOWNLOAD
+ * GET
  * ============================================================
- *
- * Protocol:
- *
- * Controller:
- *     GET test.txt
- *
- * Agent:
- *     OK FILE_READY SID:8652 SIZE:30
- *
- * Agent:
- *     [30 bytes]
- *
- * Agent:
- *     OK FILE_SENT SID:8652
- *
- * Controller:
- *     saves file as received_test.txt
  */
 int handle_get(
     int client_fd,
@@ -925,10 +992,6 @@ int handle_get(
 
     char response[BUFFER_SIZE];
 
-
-    /*
-     * Extract filename.
-     */
     if (
         !extract_filename(
             command,
@@ -939,18 +1002,13 @@ int handle_get(
     )
     {
         printf(
-            "Usage: GET <filename>\n"
+            "GET error: invalid filename.\n"
         );
 
         return 0;
     }
 
-
-    /*
-     * Send GET command.
-     */
     char command_buffer[BUFFER_SIZE];
-
 
     int command_length =
         snprintf(
@@ -960,19 +1018,18 @@ int handle_get(
             filename
         );
 
-
     if (
         command_length < 0 ||
-        (size_t)command_length >= sizeof(command_buffer)
+        (size_t)command_length >=
+            sizeof(command_buffer)
     )
     {
         printf(
-            "GET command is too long.\n"
+            "GET error: command too long.\n"
         );
 
         return 0;
     }
-
 
     if (
         send_all(
@@ -982,38 +1039,36 @@ int handle_get(
         ) < 0
     )
     {
-        return -1;
-    }
-
-
-    /*
-     * Receive FILE_READY header.
-     */
-    if (
-        recv_line(
-            client_fd,
-            response,
-            sizeof(response)
-        ) < 0
-    )
-    {
-        printf(
-            "Agent disconnected.\n"
+        perror(
+            "GET send"
         );
 
         return -1;
     }
 
+    int line_result =
+        recv_line(
+            client_fd,
+            response,
+            sizeof(response)
+        );
+
+    if (
+        line_result < 0
+    )
+    {
+        printf(
+            "GET error: Agent disconnected.\n"
+        );
+
+        return -1;
+    }
 
     printf(
         "Agent: %s\n",
         response
     );
 
-
-    /*
-     * Check Agent response.
-     */
     if (
         strncmp(
             response,
@@ -1029,16 +1084,7 @@ int handle_get(
         return 0;
     }
 
-
-    /*
-     * Extract file size.
-     *
-     * Example:
-     *
-     * OK FILE_READY SID:8652 SIZE:30
-     */
     unsigned long long received_size;
-
 
     if (
         sscanf(
@@ -1049,26 +1095,16 @@ int handle_get(
     )
     {
         printf(
-            "Invalid GET response.\n"
+            "GET error: invalid file size response.\n"
         );
 
         return -1;
     }
 
-
     uint64_t file_size =
         (uint64_t)received_size;
 
-
-    /*
-     * Create local filename.
-     *
-     * GET test.txt
-     *
-     * -> received_test.txt
-     */
     char output_filename[512];
-
 
     int output_length =
         snprintf(
@@ -1079,100 +1115,81 @@ int handle_get(
             filename
         );
 
-
     if (
         output_length < 0 ||
-        (size_t)output_length >= sizeof(output_filename)
+        (size_t)output_length >=
+            sizeof(output_filename)
     )
     {
         printf(
-            "Output filename is too long.\n"
+            "GET error: output filename too long.\n"
         );
 
         return -1;
     }
 
-
-    /*
-     * Open local output file.
-     */
     FILE *output_file =
         fopen(
             output_filename,
             "wb"
         );
 
-
     if (
         output_file == NULL
     )
     {
         perror(
-            "fopen"
+            "GET fopen"
         );
 
         return -1;
     }
 
-
-    /*
-     * Receive EXACTLY file_size bytes.
-     */
     char file_buffer[BUFFER_SIZE];
 
     uint64_t remaining =
         file_size;
 
-
     while (
         remaining > 0
     )
     {
-        size_t chunk_size;
-
-
-        if (
+        size_t chunk_size =
             remaining > BUFFER_SIZE
-        )
+                ? BUFFER_SIZE
+                : (size_t)remaining;
+
+        ssize_t bytes_received;
+
+        do
         {
-            chunk_size =
-                BUFFER_SIZE;
+            bytes_received =
+                recv(
+                    client_fd,
+                    file_buffer,
+                    chunk_size,
+                    0
+                );
         }
-        else
-        {
-            chunk_size =
-                (size_t)remaining;
-        }
-
-
-        ssize_t bytes_received =
-            recv(
-                client_fd,
-                file_buffer,
-                chunk_size,
-                0
-            );
-
+        while (
+            bytes_received < 0 &&
+            errno == EINTR
+        );
 
         if (
             bytes_received <= 0
         )
         {
-            fclose(
-                output_file
-            );
+            fclose(output_file);
 
-            remove(
-                output_filename
-            );
+            remove(output_filename);
 
             printf(
-                "GET: incomplete file transfer.\n"
+                "GET error: incomplete file transfer.\n"
             );
 
             return -1;
         }
-
 
         size_t bytes_written =
             fwrite(
@@ -1182,77 +1199,64 @@ int handle_get(
                 output_file
             );
 
-
         if (
             bytes_written !=
             (size_t)bytes_received
         )
         {
-            fclose(
-                output_file
-            );
+            fclose(output_file);
 
-            remove(
-                output_filename
-            );
+            remove(output_filename);
 
             printf(
-                "GET: file write error.\n"
+                "GET error: local file write failed.\n"
             );
 
             return -1;
         }
 
-
         remaining -=
             (uint64_t)bytes_received;
     }
 
-
-    /*
-     * File bytes are now completely received.
-     */
-    fclose(
-        output_file
-    );
-
-
-    /*
-     * IMPORTANT:
-     *
-     * Now receive Agent's final FILE_SENT response.
-     *
-     * The previous controller code was missing this step.
-     */
     if (
-        recv_line(
-            client_fd,
-            response,
-            sizeof(response)
-        ) < 0
+        fclose(output_file) != 0
     )
     {
-        remove(
-            output_filename
-        );
+        remove(output_filename);
 
         printf(
-            "GET failed: final Agent response missing.\n"
+            "GET error: fclose failed.\n"
         );
 
         return -1;
     }
 
+    line_result =
+        recv_line(
+            client_fd,
+            response,
+            sizeof(response)
+        );
+
+    if (
+        line_result < 0
+    )
+    {
+        remove(output_filename);
+
+        printf(
+            "GET error: final Agent response missing.\n"
+        );
+
+        return -1;
+    }
 
     printf(
         "Agent: %s\n",
         response
     );
 
-
-    /*
-     * Verify final Agent acknowledgement.
-     */
     if (
         strcmp(
             response,
@@ -1260,9 +1264,7 @@ int handle_get(
         ) != 0
     )
     {
-        remove(
-            output_filename
-        );
+        remove(output_filename);
 
         printf(
             "GET failed: invalid final response.\n"
@@ -1271,26 +1273,19 @@ int handle_get(
         return 0;
     }
 
-
-    /*
-     * Successful GET.
-     */
     printf(
         "GET completed successfully.\n"
     );
-
 
     printf(
         "Saved as: %s\n",
         output_filename
     );
 
-
     printf(
         "Received bytes: %llu\n",
         (unsigned long long)file_size
     );
-
 
     return 0;
 }
@@ -1298,16 +1293,8 @@ int handle_get(
 
 /*
  * ============================================================
- * HANDLE LISTPROC
+ * LISTPROC
  * ============================================================
- *
- * Agent sends:
- *
- * OK PROCS SID:8652
- * process line
- * process line
- * ...
- * END PROCS
  */
 int handle_listproc(
     int client_fd
@@ -1315,30 +1302,30 @@ int handle_listproc(
 {
     char response[BUFFER_SIZE];
 
-
     while (1)
     {
-        if (
+        int result =
             recv_line(
                 client_fd,
                 response,
                 sizeof(response)
-            ) < 0
+            );
+
+        if (
+            result < 0
         )
         {
             printf(
-                "Agent disconnected.\n"
+                "LISTPROC error: Agent disconnected.\n"
             );
 
             return -1;
         }
 
-
         printf(
             "%s\n",
             response
         );
-
 
         if (
             strcmp(
@@ -1351,7 +1338,6 @@ int handle_listproc(
         }
     }
 
-
     return 0;
 }
 
@@ -1363,25 +1349,26 @@ int handle_listproc(
  */
 int main()
 {
+    /*
+     * Prevent unexpected termination if Agent disconnects.
+     */
+    signal(
+        SIGPIPE,
+        SIG_IGN
+    );
+
     int client_fd;
 
     struct sockaddr_in server_addr;
 
     char buffer[BUFFER_SIZE];
 
-
-    /*
-     * ========================================================
-     * CREATE SOCKET
-     * ========================================================
-     */
     client_fd =
         socket(
             AF_INET,
             SOCK_STREAM,
             0
         );
-
 
     if (
         client_fd < 0
@@ -1394,31 +1381,21 @@ int main()
         return 1;
     }
 
-
     printf(
         "Socket created successfully.\n"
     );
 
-
-    /*
-     * ========================================================
-     * CONFIGURE AGENT ADDRESS
-     * ========================================================
-     */
     memset(
         &server_addr,
         0,
         sizeof(server_addr)
     );
 
-
     server_addr.sin_family =
         AF_INET;
 
-
     server_addr.sin_port =
         htons(PORT);
-
 
     if (
         inet_pton(
@@ -1432,19 +1409,11 @@ int main()
             "inet_pton"
         );
 
-        close(
-            client_fd
-        );
+        close(client_fd);
 
         return 1;
     }
 
-
-    /*
-     * ========================================================
-     * CONNECT TO AGENT
-     * ========================================================
-     */
     if (
         connect(
             client_fd,
@@ -1457,25 +1426,27 @@ int main()
             "connect"
         );
 
-        close(
-            client_fd
+        printf(
+            "Error: Could not connect to RemoteOps Agent.\n"
         );
+
+        close(client_fd);
 
         return 1;
     }
-
 
     printf(
         "Connected to RemoteOps Agent.\n"
     );
 
-    if (start_udp_receiver() < 0)
+    if (
+        start_udp_receiver() < 0
+    )
     {
         printf(
-            "UDP monitoring is unavailable.\n"
+            "Warning: UDP monitoring is unavailable.\n"
         );
     }
-
 
 
     /*
@@ -1489,11 +1460,7 @@ int main()
             "\nRemoteOps> "
         );
 
-
-        fflush(
-            stdout
-        );
-
+        fflush(stdout);
 
         if (
             fgets(
@@ -1506,10 +1473,6 @@ int main()
             break;
         }
 
-
-        /*
-         * Remove newline.
-         */
         buffer[
             strcspn(
                 buffer,
@@ -1517,10 +1480,6 @@ int main()
             )
         ] = '\0';
 
-
-        /*
-         * Ignore empty command.
-         */
         if (
             strlen(buffer) == 0
         )
@@ -1548,14 +1507,12 @@ int main()
                     buffer
                 );
 
-
             if (
                 result < 0
             )
             {
                 break;
             }
-
 
             continue;
         }
@@ -1580,14 +1537,12 @@ int main()
                     buffer
                 );
 
-
             if (
                 result < 0
             )
             {
                 break;
             }
-
 
             continue;
         }
@@ -1608,7 +1563,6 @@ int main()
             char command_line[] =
                 "LISTPROC\n";
 
-
             if (
                 send_all(
                     client_fd,
@@ -1618,12 +1572,11 @@ int main()
             )
             {
                 perror(
-                    "send"
+                    "LISTPROC send"
                 );
 
                 break;
             }
-
 
             if (
                 handle_listproc(
@@ -1634,11 +1587,15 @@ int main()
                 break;
             }
 
-
             continue;
         }
 
 
+        /*
+         * ====================================================
+         * MONITOR
+         * ====================================================
+         */
         if (
             strcmp(
                 buffer,
@@ -1662,7 +1619,8 @@ int main()
 
             if (
                 command_length < 0 ||
-                (size_t)command_length >= sizeof(command_to_send)
+                (size_t)command_length >=
+                    sizeof(command_to_send)
             )
             {
                 printf(
@@ -1681,18 +1639,21 @@ int main()
             )
             {
                 perror(
-                    "send"
+                    "MONITOR send"
                 );
 
                 break;
             }
 
-            if (
+            int result =
                 recv_line(
                     client_fd,
                     buffer,
                     sizeof(buffer)
-                ) < 0
+                );
+
+            if (
+                result < 0
             )
             {
                 printf(
@@ -1723,7 +1684,6 @@ int main()
          */
         char command_to_send[BUFFER_SIZE];
 
-
         int command_length =
             snprintf(
                 command_to_send,
@@ -1731,7 +1691,6 @@ int main()
                 "%s\n",
                 buffer
             );
-
 
         if (
             command_length < 0 ||
@@ -1745,7 +1704,6 @@ int main()
 
             continue;
         }
-
 
         if (
             send_all(
@@ -1762,18 +1720,26 @@ int main()
             break;
         }
 
-
-        /*
-         * ====================================================
-         * RECEIVE NORMAL RESPONSE
-         * ====================================================
-         */
-        if (
+        int result =
             recv_line(
                 client_fd,
                 buffer,
                 sizeof(buffer)
-            ) < 0
+            );
+
+        if (
+            result == ERR_LINE_TOO_LONG
+        )
+        {
+            printf(
+                "Error: Agent response was too long.\n"
+            );
+
+            break;
+        }
+
+        if (
+            result < 0
         )
         {
             printf(
@@ -1783,18 +1749,11 @@ int main()
             break;
         }
 
-
         printf(
             "Agent: %s\n",
             buffer
         );
 
-
-        /*
-         * ====================================================
-         * QUIT
-         * ====================================================
-         */
         if (
             strcmp(
                 buffer,
@@ -1809,7 +1768,7 @@ int main()
 
     /*
      * ========================================================
-     * CLOSE SOCKET
+     * CLEANUP
      * ========================================================
      */
     stop_udp_receiver();
@@ -1818,11 +1777,9 @@ int main()
         client_fd
     );
 
-
     printf(
         "Controller closed.\n"
     );
-
 
     return 0;
 }

@@ -558,3 +558,240 @@ This prevents multiple threads from writing to the log file simultaneously and k
 
 
 
+######################
+
+ Error Handling
+
+RemoteOps includes error handling at both the Agent and Controller sides.
+
+The purpose of error handling is to prevent unexpected crashes, detect communication failures, reject invalid commands, and provide meaningful error responses to the Controller.
+
+1. Socket Error Handling
+
+The Agent and Controller check the return values of:
+
+- socket()
+- bind()
+- listen()
+- accept()
+- connect()
+- send()
+- recv()
+- recvfrom()
+- sendto()
+- setsockopt()
+
+If a system call fails, the program reports the error using perror(), strerror(), or an application-level error response.
+
+
+
+ 2. SIGPIPE Handling
+
+Both Agent and Controller ignore SIGPIPE:
+
+signal(SIGPIPE, SIG_IGN);
+
+This prevents the process from terminating unexpectedly when sending data to a TCP connection that has already been closed by the other side.
+
+
+
+ 3. EINTR Handling
+
+Network operations can be interrupted by signals.
+
+The implementation checks for:
+
+errno == EINTR
+
+and retries the operation where appropriate.
+
+This is implemented in send_all(), recv_all(), recv_line(), UDP receive operations, and file transfer operations.
+
+
+
+4. Command Length Validation
+
+RemoteOps uses a fixed command buffer:
+
+BUFFER_SIZE = 1024
+
+If a received command is longer than the available buffer, the remaining characters are consumed until the newline character.
+
+The Agent returns:
+
+ERR 013 COMMAND_TOO_LONG
+
+This prevents protocol desynchronization caused by oversized commands.
+
+ 5. Authentication Errors
+
+Commands other than AUTH and QUIT require successful authentication.
+
+Example:
+
+RemoteOps> SYSINFO
+
+Agent:
+
+ERR 001 AUTH_REQUIRED
+
+Incorrect authentication:
+
+RemoteOps> AUTH WRONGTOKEN
+
+Agent:
+
+ERR 001 AUTH_FAILED SID:8652
+
+
+
+ 6. EXEC Error Handling
+
+Only whitelisted commands are allowed:
+
+- DATE
+- UPTIME
+- DISKFREE
+- HOSTNAME
+- WHOAMI
+
+Example:
+
+RemoteOps> EXEC RM -RF /
+
+Agent:
+
+ERR 002 COMMAND_NOT_ALLOWED
+
+If execution itself fails:
+
+ERR 004 EXEC_FAILED
+
+This prevents arbitrary shell command execution.
+
+ 7. LISTPROC Error Handling
+
+LISTPROC uses the Linux ps command.
+
+If the process listing operation cannot be started:
+
+ERR 003 LISTPROC_FAILED
+
+The Agent also checks whether the process pipe can be closed correctly.
+
+ 8. File Transfer Error Handling
+
+PUT and GET perform multiple validation steps.
+
+ PUT
+
+The following errors are handled:
+
+- Invalid filename
+- Path traversal attempt
+- Storage directory failure
+- File size receive failure
+- Incomplete transfer
+- File write failure
+- File close failure
+
+Example:
+
+ERR 006 INVALID_FILENAME
+
+ERR 007 STORAGE_ERROR
+
+ GET
+
+The following errors are handled:
+
+- Invalid filename
+- File does not exist
+- File read failure
+- File transfer failure
+- Invalid final response
+
+Example:
+
+ERR 009 FILE_NOT_FOUND
+
+ERR 010 FILE_ERROR
+
+ 9. Path Traversal Protection
+
+RemoteOps rejects filenames containing:
+
+
+
+Examples of rejected filenames:
+
+../secret.txt
+../../passwd
+/home/user/file.txt
+..\secret.txt
+
+Only simple filenames are accepted.
+
+Example:
+
+PUT test.txt
+
+GET test.txt
+
+ 10. UDP Monitoring Error Handling
+
+UDP monitoring checks:
+
+- UDP socket creation
+- UDP address configuration
+- sendto()
+- recvfrom()
+- select()
+- pthread creation
+
+If UDP monitoring cannot be started:
+
+ERR 012 MONITOR_FAILED
+
+If monitoring is already active:
+
+ERR 011 MONITOR_ALREADY_RUNNING
+
+
+
+11. Thread Error Handling
+
+RemoteOps uses POSIX threads.
+
+The program checks pthread_create() and pthread_detach()/pthread_join() results.
+
+If a Controller thread cannot be created, the Agent closes the connection and releases the allocated memory.
+
+12. Memory Allocation Error Handling
+
+Before using dynamically allocated client socket memory, malloc() is checked.
+
+If allocation fails:
+
+ERR 015 SERVER_RESOURCE_ERROR
+
+The connection is closed safely.
+
+ 13. Graceful Connection Handling
+
+If the Controller disconnects unexpectedly, the Agent detects the failed recv() operation and terminates the client thread safely.
+
+The Agent logs:
+
+Client disconnected
+
+The Controller also detects when the Agent closes the connection and exits the command loop safely.
+
+ Example Error Scenarios
+
+ Scenario 1 – Command Without Authentication
+
+text
+RemoteOps> SYSINFO
+
+Agent: ERR 001 AUTH_REQUIRED

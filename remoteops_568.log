@@ -5,3 +5,7 @@
 [19:33:18] MONITOR STOP
 [19:35:02] AUTH successful
 [19:35:13] SYSINFO requested
+[20:30:45] Agent started
+[20:31:20] AUTH successful
+[20:31:28] EXEC rejected: command not allowed
+[20:31:52] Unknown command received
