@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -12,6 +13,164 @@
 #define BUFFER_SIZE 1024
 
 #define DOWNLOAD_PREFIX "received_"
+
+#define UDP_PORT 9410
+
+int udp_socket_fd = -1;
+volatile int udp_receiver_running = 1;
+
+void *udp_receiver(void *arg)
+{
+    (void)arg;
+
+    char buffer[BUFFER_SIZE];
+    struct sockaddr_in agent_addr;
+    socklen_t agent_len;
+
+    while (udp_receiver_running)
+    {
+        fd_set read_fds;
+        struct timeval timeout;
+
+        FD_ZERO(&read_fds);
+        FD_SET(udp_socket_fd, &read_fds);
+
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 500000;
+
+        int result = select(
+            udp_socket_fd + 1,
+            &read_fds,
+            NULL,
+            NULL,
+            &timeout
+        );
+
+        if (!udp_receiver_running)
+        {
+            break;
+        }
+
+        if (result <= 0)
+        {
+            continue;
+        }
+
+        agent_len = sizeof(agent_addr);
+
+        ssize_t bytes_received = recvfrom(
+            udp_socket_fd,
+            buffer,
+            sizeof(buffer) - 1,
+            0,
+            (struct sockaddr *)&agent_addr,
+            &agent_len
+        );
+
+        if (bytes_received < 0)
+        {
+            continue;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        printf(
+            "\nUDP Monitor [%s:%d] -> %s\n",
+            inet_ntoa(agent_addr.sin_addr),
+            ntohs(agent_addr.sin_port),
+            buffer
+        );
+
+        printf("\nRemoteOps> ");
+        fflush(stdout);
+    }
+
+    return NULL;
+}
+
+int start_udp_receiver()
+{
+    struct sockaddr_in udp_addr;
+    int opt = 1;
+
+    udp_socket_fd = socket(
+        AF_INET,
+        SOCK_DGRAM,
+        0
+    );
+
+    if (udp_socket_fd < 0)
+    {
+        perror("UDP socket");
+        return -1;
+    }
+
+    setsockopt(
+        udp_socket_fd,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &opt,
+        sizeof(opt)
+    );
+
+    memset(
+        &udp_addr,
+        0,
+        sizeof(udp_addr)
+    );
+
+    udp_addr.sin_family = AF_INET;
+    udp_addr.sin_addr.s_addr = INADDR_ANY;
+    udp_addr.sin_port = htons(UDP_PORT);
+
+    if (bind(
+        udp_socket_fd,
+        (struct sockaddr *)&udp_addr,
+        sizeof(udp_addr)
+    ) < 0)
+    {
+        perror("UDP bind");
+        close(udp_socket_fd);
+        udp_socket_fd = -1;
+        return -1;
+    }
+
+    pthread_t thread;
+    udp_receiver_running = 1;
+
+    if (pthread_create(
+        &thread,
+        NULL,
+        udp_receiver,
+        NULL
+    ) != 0)
+    {
+        perror("pthread_create");
+        close(udp_socket_fd);
+        udp_socket_fd = -1;
+        return -1;
+    }
+
+    pthread_detach(thread);
+
+    printf(
+        "UDP monitor receiver listening on port %d.\n",
+        UDP_PORT
+    );
+
+    return 0;
+}
+
+void stop_udp_receiver()
+{
+    udp_receiver_running = 0;
+
+    if (udp_socket_fd >= 0)
+    {
+        close(udp_socket_fd);
+        udp_socket_fd = -1;
+    }
+}
 
 
 /*
@@ -1310,6 +1469,14 @@ int main()
         "Connected to RemoteOps Agent.\n"
     );
 
+    if (start_udp_receiver() < 0)
+    {
+        printf(
+            "UDP monitoring is unavailable.\n"
+        );
+    }
+
+
 
     /*
      * ========================================================
@@ -1472,6 +1639,78 @@ int main()
         }
 
 
+        if (
+            strcmp(
+                buffer,
+                "MONITOR START"
+            ) == 0 ||
+            strcmp(
+                buffer,
+                "MONITOR STOP"
+            ) == 0
+        )
+        {
+            char command_to_send[BUFFER_SIZE];
+
+            int command_length =
+                snprintf(
+                    command_to_send,
+                    sizeof(command_to_send),
+                    "%s\n",
+                    buffer
+                );
+
+            if (
+                command_length < 0 ||
+                (size_t)command_length >= sizeof(command_to_send)
+            )
+            {
+                printf(
+                    "Command is too long.\n"
+                );
+
+                continue;
+            }
+
+            if (
+                send_all(
+                    client_fd,
+                    command_to_send,
+                    (size_t)command_length
+                ) < 0
+            )
+            {
+                perror(
+                    "send"
+                );
+
+                break;
+            }
+
+            if (
+                recv_line(
+                    client_fd,
+                    buffer,
+                    sizeof(buffer)
+                ) < 0
+            )
+            {
+                printf(
+                    "Agent disconnected.\n"
+                );
+
+                break;
+            }
+
+            printf(
+                "Agent: %s\n",
+                buffer
+            );
+
+            continue;
+        }
+
+
         /*
          * ====================================================
          * NORMAL COMMANDS
@@ -1573,6 +1812,8 @@ int main()
      * CLOSE SOCKET
      * ========================================================
      */
+    stop_udp_receiver();
+
     close(
         client_fd
     );

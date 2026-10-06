@@ -18,6 +18,14 @@
 #define STORAGE_PARENT "./agentfiles"
 #define STORAGE_DIR "./agentfiles/568"
 
+#define UDP_PORT 9410
+
+volatile int monitor_running = 0;
+volatile int monitor_stop_requested = 0;
+char monitor_controller_ip[INET_ADDRSTRLEN];
+char connected_controller_ip[INET_ADDRSTRLEN];
+pthread_t monitor_thread;
+
 
 /*
  * ============================================================
@@ -1322,6 +1330,147 @@ void handle_get(
 }
 
 
+void *monitor_worker(void *arg)
+{
+    (void)arg;
+
+    int udp_fd = socket(
+        AF_INET,
+        SOCK_DGRAM,
+        0
+    );
+
+    if (udp_fd < 0)
+    {
+        monitor_running = 0;
+        return NULL;
+    }
+
+    struct sockaddr_in controller_addr;
+
+    memset(
+        &controller_addr,
+        0,
+        sizeof(controller_addr)
+    );
+
+    controller_addr.sin_family = AF_INET;
+    controller_addr.sin_port = htons(UDP_PORT);
+
+    if (
+        inet_pton(
+            AF_INET,
+            monitor_controller_ip,
+            &controller_addr.sin_addr
+        ) <= 0
+    )
+    {
+        close(udp_fd);
+        monitor_running = 0;
+        return NULL;
+    }
+
+    while (!monitor_stop_requested)
+    {
+        double cpu = get_cpu_load();
+        int memory = get_memory_usage();
+        long uptime_seconds = get_uptime();
+        char uptime_text[32];
+        char monitor_message[BUFFER_SIZE];
+
+        if (
+            cpu >= 0 &&
+            memory >= 0 &&
+            uptime_seconds >= 0
+        )
+        {
+            format_uptime(
+                uptime_seconds,
+                uptime_text,
+                sizeof(uptime_text)
+            );
+
+            snprintf(
+                monitor_message,
+                sizeof(monitor_message),
+                "MONITOR CPU=%.2f MEM=%d%% UPTIME=%s SID:%s",
+                cpu,
+                memory,
+                uptime_text,
+                SID
+            );
+
+            sendto(
+                udp_fd,
+                monitor_message,
+                strlen(monitor_message),
+                0,
+                (struct sockaddr *)&controller_addr,
+                sizeof(controller_addr)
+            );
+        }
+
+        for (int i = 0; i < 2 && !monitor_stop_requested; i++)
+        {
+            sleep(1);
+        }
+    }
+
+    close(udp_fd);
+    monitor_running = 0;
+
+    return NULL;
+}
+
+int start_monitor(const char *controller_ip)
+{
+    if (monitor_running)
+    {
+        return 1;
+    }
+
+    snprintf(
+        monitor_controller_ip,
+        sizeof(monitor_controller_ip),
+        "%s",
+        controller_ip
+    );
+
+    monitor_stop_requested = 0;
+    monitor_running = 1;
+
+    if (
+        pthread_create(
+            &monitor_thread,
+            NULL,
+            monitor_worker,
+            NULL
+        ) != 0
+    )
+    {
+        monitor_running = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
+void stop_monitor()
+{
+    if (!monitor_running)
+    {
+        return;
+    }
+
+    monitor_stop_requested = 1;
+
+    pthread_join(
+        monitor_thread,
+        NULL
+    );
+}
+
+
 /*
  * ============================================================
  * HANDLE CLIENT
@@ -1478,6 +1627,8 @@ void *handle_client(
             ) == 0
         )
         {
+            stop_monitor();
+
             char response[BUFFER_SIZE];
 
             snprintf(
@@ -1506,6 +1657,85 @@ void *handle_client(
         {
             char response[] =
                 "ERR 001 AUTH_REQUIRED\n";
+
+            send_all(
+                client_fd,
+                response,
+                strlen(response)
+            );
+
+            continue;
+        }
+
+
+        if (
+            strcmp(
+                buffer,
+                "MONITOR START"
+            ) == 0
+        )
+        {
+            int result = start_monitor(
+                connected_controller_ip
+            );
+
+            char response[BUFFER_SIZE];
+
+            if (result == 0)
+            {
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "OK MONITOR_STARTED SID:%s\n",
+                    SID
+                );
+            }
+            else if (result == 1)
+            {
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "ERR 011 MONITOR_ALREADY_RUNNING SID:%s\n",
+                    SID
+                );
+            }
+            else
+            {
+                snprintf(
+                    response,
+                    sizeof(response),
+                    "ERR 012 MONITOR_FAILED SID:%s\n",
+                    SID
+                );
+            }
+
+            send_all(
+                client_fd,
+                response,
+                strlen(response)
+            );
+
+            continue;
+        }
+
+
+        if (
+            strcmp(
+                buffer,
+                "MONITOR STOP"
+            ) == 0
+        )
+        {
+            stop_monitor();
+
+            char response[BUFFER_SIZE];
+
+            snprintf(
+                response,
+                sizeof(response),
+                "OK MONITOR_STOPPED SID:%s\n",
+                SID
+            );
 
             send_all(
                 client_fd,
@@ -1907,6 +2137,10 @@ int main()
     );
 
     printf(
+        "UDP Monitoring     : Enabled\n"
+    );
+
+    printf(
         "Storage            : %s\n",
         STORAGE_DIR
     );
@@ -1948,6 +2182,14 @@ int main()
         printf(
             "New Controller connected.\n"
         );
+
+        inet_ntop(
+            AF_INET,
+            &client_addr.sin_addr,
+            connected_controller_ip,
+            sizeof(connected_controller_ip)
+        );
+
 
 
         int *client_socket =

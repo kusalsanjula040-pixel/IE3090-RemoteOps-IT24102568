@@ -378,4 +378,117 @@ cmp test.txt received_test.txt
 When `cmp` does not return anything, the file uploaded and downloaded are the same.
 
 
- |
+ 
+###UDP Monitoring
+
+Using a separate UDP channel for system monitoring, RemoteOps offers real-time monitoring of a system. Control commands are sent via the TCP connection, and monitoring information is continually sent from the Agent to the Controller via the UDP connection.
+
+### MONITOR START
+
+The `MONITOR START` command starts real-time monitoring on the RemoteOps Agent.
+
+Command:
+
+text
+MONITOR START
+
+
+Example:
+RemoteOps> MONITOR START
+Agent: OK MONITOR_STARTED SID:8652
+
+
+Once monitoring has started, the Agent periodically sends out UDP monitoring packets to the Controller.
+
+The monitoring information comprises:
+
+* CPU Load
+* Memory Usage
+* System Uptime
+* Session ID (SID)
+
+Example UDP output:
+
+
+UDP Monitor [127.0.0.1:40457] -> MONITOR CPU=0.04 MEM=37% UPTIME=00:11:07 SID:8652
+
+
+Packets are sent periodically at a rate of 0.5 seconds.
+
+ MONITOR STOP
+
+The MONITOR STOP command will terminate the currently running monitoring process.
+
+
+
+The Agent terminates monitoring and no more UDP monitoring packets are sent.
+
+ Duplicate Monitoring Request
+
+The Agent returns an error if monitoring is already running and the Controller sends the `MONITOR START` again.
+
+
+Agent: ERR 011 MONITOR_ALREADY_RUNNING SID:8652
+
+
+UDP Monitoring Architecture
+
+
+Controller
+    |
+    | TCP
+    | MONITOR START / STOP
+    |
+    v
+RemoteOps Agent
+    |
+    | UDP
+    | CPU / Memory / Uptime
+    |
+    v
+Controller UDP Receiver
+
+
+ UDP Port
+
+The UDP monitoring service is based on:
+
+
+UDP Port: 9410
+
+
+Since TCP and UDP are separate transport protocols, the same port number is used for both.
+
+ Monitoring Thread
+
+Monitoring is performed in a separate POSIX thread by the Agent. This enables Agent to process TCP commands as data is being transmitted via UDP.
+
+The monitoring thread:
+
+1. Creates a UDP socket.
+2. Gets the Controller IP address.
+3. Gathers CPU, memory and uptime data.
+4. Generates the monitoring message.
+Sends the message via UDP.
+6. Waits for 2 seconds.
+7. Repeats until monitoring is stopped.
+
+ Controller UDP Receiver
+
+The Controller starts a UDP receiver after establishing the TCP connection with the Agent.
+
+The receiver is listening on:
+
+
+UDP Port: 9410
+
+
+It is not blocking the normal RemoteOps command prompt, it will receive and display monitoring packets.
+
+Error Handling
+
+These are the responses that are accepted:
+OK MONITOR_STARTED
+OK MONITOR_STOPPED
+ERR 011 MONITOR_ALREADY_RUNNING
+ERR 012 MONITOR_FAILED
