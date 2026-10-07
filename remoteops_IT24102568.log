@@ -11,3 +11,12 @@
 [20:31:52] Unknown command received
 [22:38:45] Client requested QUIT
 [22:57:13] Agent started
+[00:21:27] Client disconnected
+[09:47:38] Agent started
+[09:48:05] AUTH successful
+[09:49:48] Unknown command received
+[09:49:55] Client disconnected
+[09:50:04] AUTH successful
+[09:50:16] PUT test.txt
+[09:52:30] GET test.txt
+[13:03:27] Agent started
