@@ -1009,36 +1009,8 @@ The design diary forms part of the required development process evidence.
 
 ---
 
-## 32. Testing Summary
 
-The following tests are planned/performed to verify the mandatory functionality.
-
-| Test Case                | Expected Result                     | Actual Result            |
-| ------------------------ | ----------------------------------- | ------------------------ |
-| Agent startup            | Agent starts successfully           | `[INSERT ACTUAL RESULT]` |
-| TCP connection           | Controller connects successfully    | `[INSERT ACTUAL RESULT]` |
-| Correct authentication   | Authentication succeeds             | `[INSERT ACTUAL RESULT]` |
-| Incorrect authentication | Authentication is rejected          | `[INSERT ACTUAL RESULT]` |
-| SYSINFO                  | CPU, memory and uptime returned     | `[INSERT ACTUAL RESULT]` |
-| LISTPROC                 | Process snapshot returned           | `[INSERT ACTUAL RESULT]` |
-| `EXEC DATE`              | Command accepted                    | `[INSERT ACTUAL RESULT]` |
-| `EXEC UPTIME`            | Command accepted                    | `[INSERT ACTUAL RESULT]` |
-| `EXEC DISKFREE`          | Command accepted                    | `[INSERT ACTUAL RESULT]` |
-| `EXEC HOSTNAME`          | Command accepted                    | `[INSERT ACTUAL RESULT]` |
-| `EXEC WHOAMI`            | Command accepted                    | `[INSERT ACTUAL RESULT]` |
-| Invalid EXEC             | Command rejected                    | `[INSERT ACTUAL RESULT]` |
-| PUT                      | File uploaded successfully          | `[INSERT ACTUAL RESULT]` |
-| GET                      | File downloaded successfully        | `[INSERT ACTUAL RESULT]` |
-| File integrity           | Original and downloaded files match | `[INSERT ACTUAL RESULT]` |
-| MONITOR START            | UDP monitoring begins               | `[INSERT ACTUAL RESULT]` |
-| MONITOR STOP             | UDP monitoring stops                | `[INSERT ACTUAL RESULT]` |
-| QUIT                     | Connection closes cleanly           | `[INSERT ACTUAL RESULT]` |
-| Logging                  | Activities recorded in log          | `[INSERT ACTUAL RESULT]` |
-| Multiple clients         | Multiple Controllers supported      | `[INSERT ACTUAL RESULT]` |
-
----
-
-## 33. Evidence Required for the Implementation Report
+## 32. Evidence Required for the Implementation Report
 
 The Implementation Report should contain genuine screenshots captured from the student's own implementation.
 
@@ -1150,7 +1122,7 @@ with at least one uploaded file.
 
 ---
 
-## 34. Limitations and Possible Future Improvements
+## 33. Limitations and Possible Future Improvements
 
 The current implementation focuses on the mandatory requirements of the IE3090 RemoteOps assignment.
 
@@ -1168,7 +1140,7 @@ These features are not required for the minimum mandatory implementation unless 
 
 ---
 
-## 35. GitHub Repository
+## 34. GitHub Repository
 
 The project source code and development history are maintained in GitHub.
 
@@ -1182,7 +1154,7 @@ The Git history provides evidence of incremental development throughout the assi
 
 ---
 
-## 36. Submission Files
+## 35. Submission Files
 
 The expected submission files are:
 
@@ -1224,84 +1196,4 @@ remoteops_568.log
 
 ---
 
-## 37. Final Submission Checklist
 
-Before submitting Part 1, verify the following:
-
-### Source Code
-
-* [ ] `agent_568.c` included
-* [ ] `controller_568.c` included
-* [ ] `Makefile_568` included
-* [ ] `README.md` included
-
-### Personalisation
-
-* [ ] Registration number is `IT24102568`
-* [ ] TCP port is `9410`
-* [ ] SID is `8652`
-* [ ] Authentication token is `OPS-2568`
-* [ ] Agent file is `agent_568.c`
-* [ ] Controller file is `controller_568.c`
-* [ ] Makefile is `Makefile_568`
-* [ ] Log file is `remoteops_568.log`
-* [ ] Storage directory is `./agentfiles/IT24102568/`
-* [ ] ZIP name is `IE3090_IT24102568.zip`
-
-### Functional Testing
-
-* [ ] Agent startup tested
-* [ ] Multiple Controller connections tested
-* [ ] AUTH tested
-* [ ] Invalid AUTH tested
-* [ ] SYSINFO tested
-* [ ] LISTPROC tested
-* [ ] All five EXEC whitelist commands tested
-* [ ] Invalid EXEC command tested
-* [ ] PUT tested
-* [ ] GET tested
-* [ ] File integrity verified
-* [ ] MONITOR START tested
-* [ ] MONITOR STOP tested
-* [ ] QUIT tested
-* [ ] Error handling tested
-* [ ] Logging verified
-
-### Documentation
-
-* [ ] Implementation Report completed
-* [ ] Architecture diagram included
-* [ ] Personalisation proof included
-* [ ] Port screenshot included
-* [ ] Log screenshot included
-* [ ] Storage directory screenshot included
-* [ ] Code screenshots included
-* [ ] Execution screenshots included
-* [ ] Testing summary completed
-* [ ] Design rationale completed
-* [ ] Design Diary completed
-* [ ] AI Prompt Log completed
-* [ ] Structured Reflection completed
-
-### GitHub
-
-* [ ] Minimum 8 meaningful commits completed
-* [ ] Commit messages are descriptive
-* [ ] Development history is incremental
-* [ ] Final required files committed before the deadline
-* [ ] Repository link verified
-
----
-
-## 38. Student Declaration
-
-I confirm that this RemoteOps implementation was developed for the IE3090 Network Programming assignment and that the submitted implementation has been tested and reviewed.
-
-Any AI assistance used during Part 1 has been recorded in the submitted AI Prompt Log and critically evaluated in accordance with the assignment's CLEAR Level 3 AI Collaboration requirements.
-
-I understand that I am responsible for the submitted source code and must be able to explain and modify the implementation during the Lab Assessment and Viva.
-
-**Student:** Kusal Sanjula
-**Registration Number:** IT24102568
-**Module:** IE3090 — Network Programming
-**Date:** 7 October 2026
