@@ -350,8 +350,6 @@ Successful transfers are indicated by final acknowledgements.
 
 Create a test file:
 
-bash
-echo "Hello RemoteOps" > test.txt
 
 
 Authenticate and upload:
